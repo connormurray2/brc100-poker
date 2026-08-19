@@ -19,7 +19,8 @@ import (
 
 func main() {
 	keyPath := flag.String("key", "", "path to the wallet private key (hex)")
-	dbPath := flag.String("db", "wallet.db", "path to the wallet database (this IS the wallet: back it up)")
+	dbPath := flag.String("db", "", "path to a SQLite wallet database (this IS the wallet: back it up)")
+	dsn := flag.String("dsn", "", "Postgres DSN for the wallet database; takes precedence over -db")
 	originator := flag.String("originator", "poker.local", "FQDN-shaped originator for BRC-100 calls")
 	captcha := flag.String("captcha", "", "Turnstile captcha token from the faucet page")
 	bearer := flag.String("bearer", "", "faucet API bearer token (skips the captcha)")
@@ -31,13 +32,18 @@ func main() {
 		flag.Usage()
 		os.Exit(2)
 	}
-	if err := run(*keyPath, *dbPath, *originator, *captcha, *bearer, *balanceOnly); err != nil {
+	if *dbPath == "" && *dsn == "" {
+		fmt.Fprintln(os.Stderr, "fund: one of -db or -dsn is required")
+		flag.Usage()
+		os.Exit(2)
+	}
+	if err := run(*keyPath, *dbPath, *dsn, *originator, *captcha, *bearer, *balanceOnly); err != nil {
 		fmt.Fprintf(os.Stderr, "fund: %v\n", err)
 		os.Exit(1)
 	}
 }
 
-func run(keyPath, dbPath, originator, captcha, bearer string, balanceOnly bool) error {
+func run(keyPath, dbPath, dsn, originator, captcha, bearer string, balanceOnly bool) error {
 	// The key path is supplied by the operator running this command; reading it is the
 	// whole point of the flag.
 	raw, err := os.ReadFile(keyPath) //nolint:gosec // operator-supplied path by design
@@ -52,10 +58,20 @@ func run(keyPath, dbPath, originator, captcha, bearer string, balanceOnly bool) 
 	ctx := context.Background()
 	logger := slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn}))
 
+	// Postgres for a deployed wallet, SQLite for local work. The storage name must match
+	// whatever the service uses, or the funded coins land in a different wallet.
+	backend := brc100.BackendSQLite
+	storage := "poker-fund"
+	if dsn != "" {
+		backend = brc100.BackendPostgres
+		storage = "poker-table"
+	}
+
 	w, err := brc100.New(ctx, brc100.Options{
-		Backend:       brc100.BackendSQLite,
+		Backend:       backend,
 		SQLitePath:    dbPath,
-		StorageName:   "poker-fund",
+		PostgresDSN:   dsn,
+		StorageName:   storage,
 		PrivateKeyHex: keyHex,
 		MaxDBConns:    8,
 		Logger:        logger,
