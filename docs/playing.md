@@ -99,6 +99,21 @@ Anything other than an explicit `y` declines. A mistyped answer does not move mo
 `-auto-approve` exists for development and gives away the protection the agent exists to
 provide. It warns loudly, and it is never the default.
 
+## Dealerless dealing
+
+When every seat at a table has registered an agent, the deal runs **through the agents** and nobody
+— including the table service — can read a card they were not dealt. The table sequences the chain
+and relays disclosures; the scalars that decrypt a card never leave the agent that owns them.
+
+The UI labels which kind of deal you got:
+
+- **dealerless** — every seat held its own cards. Nothing else could read them.
+- **server-dealt** — a seat had no agent, so the server shuffled and can see the cards. Fine for a
+  demonstration, and labelled so you are never left assuming the stronger property.
+
+A failed dealerless deal is **not** silently downgraded to a dealt one. If the chain cannot
+complete, the hand does not start.
+
 ## What protects you
 
 - **No stake before a refund.** Your agent will not record a stake until a signed refund of it

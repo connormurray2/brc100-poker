@@ -293,6 +293,10 @@ func (s *Store) Handler(identityKey, version, network string) http.Handler {
 		}
 		var req struct {
 			IdentityKey string `json:"identityKey"`
+			// AgentURL is where this seat's agent serves the substrate. Without it the
+			// seat cannot hold its own deal secrets, so the table cannot deal without
+			// a dealer.
+			AgentURL string `json:"agentUrl"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body is not valid JSON"})
@@ -303,7 +307,13 @@ func (s *Store) Handler(identityKey, version, network string) http.Handler {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"seat": seat})
+		if req.AgentURL != "" {
+			if err := live.RegisterAgent(req.IdentityKey, req.AgentURL); err != nil {
+				writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+				return
+			}
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"seat": seat, "agentRegistered": req.AgentURL != ""})
 	})
 
 	mux.HandleFunc("/api/ready", func(w http.ResponseWriter, r *http.Request) {
@@ -361,10 +371,13 @@ func (s *Store) Handler(identityKey, version, network string) http.Handler {
 		key := r.URL.Query().Get("identityKey")
 		seat := live.SeatOf(key)
 		writeJSON(w, http.StatusOK, map[string]any{
-			"seat":    seat,
-			"table":   live.View(seat),
-			"legal":   live.LegalFor(seat),
-			"winners": live.Winners(),
+			"seat":  seat,
+			"table": live.View(seat),
+			"legal": live.LegalFor(seat),
+			// dealerless says whether the deal ran through agents. A player is entitled
+			// to know which they got rather than assuming the stronger one.
+			"dealerless": live.Dealerless(),
+			"winners":    live.Winners(),
 		})
 	})
 

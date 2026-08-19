@@ -206,3 +206,8 @@ summary { cursor: pointer; color: var(--muted); font-size: 0.87rem; }
 }
 
 .seat.you { border-color: var(--accent); }
+
+.pill.warn {
+  background: rgba(251,191,36,0.14); color: var(--warn);
+  border-color: rgba(251,191,36,0.35);
+}

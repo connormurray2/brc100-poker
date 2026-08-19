@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
 	"github.com/galt-tr/go-arcade-toolbox/pkg/arcade"
 
 	"github.com/cmurray/brc100-poker/internal/config"
@@ -139,6 +140,19 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("creating the live table: %w", err)
 	}
+
+	// The coordinator drives the dealerless deal across seats' agents. It authenticates with
+	// the table's own key, which each agent must have granted, and it can read nothing: every
+	// scalar stays inside an agent.
+	tableKey, err := ec.PrivateKeyFromHex(cfg.WalletKeyHex)
+	if err != nil {
+		return fmt.Errorf("parsing the table key for the deal coordinator: %w", err)
+	}
+	coord, err := webui.NewCoordinator(tableKey, cfg.Originator)
+	if err != nil {
+		return fmt.Errorf("creating the deal coordinator: %w", err)
+	}
+	live.SetCoordinator(coord)
 	ui.SetLive(live)
 
 	mux := http.NewServeMux()

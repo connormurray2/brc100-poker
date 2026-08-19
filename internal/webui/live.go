@@ -1,6 +1,7 @@
 package webui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -39,6 +40,16 @@ type LiveTable struct {
 	stalledSeat int
 	stallReason string
 
+	// coord drives the dealerless deal across seats' agents. When nil the table falls back to
+	// a local shuffle, which is only appropriate when no seat has an agent — a demonstration,
+	// not a hand for value.
+	coord *Coordinator
+	// agentURL maps a seat's identity key to its agent, registered when the seat joins.
+	agentURL map[string]string
+	// dealerless records whether the completed deal ran through agents, so the UI can say so
+	// rather than leaving a player to assume.
+	dealerless bool
+
 	now func() time.Time
 }
 
@@ -58,11 +69,44 @@ func NewLiveTable(terms table.Terms) (*LiveTable, error) {
 		id:          terms.TableID,
 		terms:       terms,
 		seatOf:      make(map[string]int),
+		agentURL:    make(map[string]string),
 		money:       money,
 		hole:        make(map[int][]cards.Card),
 		stalledSeat: -1,
 		now:         time.Now,
 	}, nil
+}
+
+// SetCoordinator attaches the coordinator that runs the dealerless deal.
+func (l *LiveTable) SetCoordinator(c *Coordinator) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.coord = c
+}
+
+// RegisterAgent records where a seat's agent can be reached.
+//
+// Without an agent a seat cannot hold its own deal secrets, so a table where any seat lacks one
+// cannot deal without a dealer. That is reported rather than silently downgraded.
+func (l *LiveTable) RegisterAgent(identityKey, url string) error {
+	key := strings.ToLower(strings.TrimSpace(identityKey))
+	if key == "" || url == "" {
+		return errors.New("webui: an identity key and an agent URL are both required")
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, ok := l.seatOf[key]; !ok {
+		return errors.New("webui: this identity holds no seat")
+	}
+	l.agentURL[key] = url
+	return nil
+}
+
+// Dealerless reports whether the current hand was dealt through agents.
+func (l *LiveTable) Dealerless() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.dealerless
 }
 
 // Join seats a player and returns their seat index.
@@ -136,13 +180,16 @@ func (l *LiveTable) Ready(identityKey string) error {
 }
 
 func (l *LiveTable) dealLocked() error {
-	deck, err := cards.Shuffled()
-	if err != nil {
-		return fmt.Errorf("webui: shuffling: %w", err)
-	}
 	stacks := make([]int64, len(l.seats))
 	for i := range stacks {
 		stacks[i] = int64(l.terms.BuyInSatoshis)
+	}
+
+	// Prefer a dealerless deal: every seat holds its own secrets and nothing here can read a
+	// card. Only fall back to a local shuffle when a seat has no agent, and say so.
+	deck, dealerless, hole, err := l.buildDeckLocked()
+	if err != nil {
+		return err
 	}
 
 	st, err := engine.New(engine.Config{
@@ -156,10 +203,68 @@ func (l *LiveTable) dealLocked() error {
 		return fmt.Errorf("webui: starting the hand: %w", err)
 	}
 	l.st = st
-	for i, s := range st.Seats {
-		l.hole[i] = s.Hole
+	l.dealerless = dealerless
+
+	if dealerless {
+		// The cards each seat read for itself. The engine was fed the same cards so its
+		// evaluation matches, but these are the authoritative record of what each agent
+		// proved it could read.
+		for seat, cs := range hole {
+			l.hole[seat] = cs
+		}
+	} else {
+		for i, s := range st.Seats {
+			l.hole[i] = s.Hole
+		}
 	}
 	return nil
+}
+
+// buildDeckLocked produces the hand's cards, dealerlessly when every seat has an agent.
+//
+// The engine needs a concrete ordered deck, so a coordinated deal is flattened into one: each
+// seat's own cards first in seat order, then the board, matching how the engine consumes them. The
+// coordinator only ever learns a seat's cards because that seat's agent read them and reported
+// them, which is the same trust a player extends by sitting down.
+func (l *LiveTable) buildDeckLocked() ([]cards.Card, bool, map[int][]cards.Card, error) {
+	endpoints := make([]AgentEndpoint, 0, len(l.seats))
+	for _, s := range l.seats {
+		url, ok := l.agentURL[s.IdentityKey]
+		if !ok {
+			// A seat without an agent cannot hold secrets, so no dealerless deal is
+			// possible for this table.
+			endpoints = nil
+			break
+		}
+		endpoints = append(endpoints, AgentEndpoint{
+			Seat: s.Index, IdentityKey: s.IdentityKey, URL: url,
+		})
+	}
+
+	if l.coord == nil || len(endpoints) != len(l.seats) {
+		deck, err := cards.Shuffled()
+		if err != nil {
+			return nil, false, nil, fmt.Errorf("webui: shuffling: %w", err)
+		}
+		return deck, false, nil, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	defer cancel()
+
+	dealt, err := l.coord.Deal(ctx, l.id, endpoints, 2)
+	if err != nil {
+		// A failed deal is not silently downgraded to a dealt one: a player who was told
+		// the hand is dealerless must not get a dealer instead.
+		return nil, false, nil, fmt.Errorf("webui: the dealerless deal failed: %w", err)
+	}
+
+	deck := make([]cards.Card, 0, len(l.seats)*2+5)
+	for seat := 0; seat < len(l.seats); seat++ {
+		deck = append(deck, dealt.Hole[seat]...)
+	}
+	deck = append(deck, dealt.Board...)
+	return deck, true, dealt.Hole, nil
 }
 
 // Act applies a player's action.

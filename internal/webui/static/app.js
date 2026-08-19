@@ -100,9 +100,16 @@ el('connect').addEventListener('click', async () => {
 
 el('join').addEventListener('click', async () => {
   try {
-    const { seat } = await postJSON('/api/join', { identityKey });
+    // The agent URL travels with the join: without it this seat cannot hold its own deal
+    // secrets, and the table would have to fall back to dealing the cards itself.
+    const { seat, agentRegistered } = await postJSON('/api/join', {
+      identityKey, agentUrl: agentUrl,
+    });
     mySeat = seat;
-    setStatus('seatStatus', `You are seat ${seat}. Commit your buy-in when ready.`, 'ok');
+    setStatus('seatStatus',
+      `You are seat ${seat}.` +
+      (agentRegistered ? ' Your agent will hold your own cards.' : ' No agent registered.') +
+      ' Commit your buy-in when ready.', 'ok');
     await refresh();
   } catch (e) {
     setStatus('seatStatus', e.message, 'bad');
@@ -153,6 +160,22 @@ async function refresh() {
   el('street').textContent = v.street || '';
   el('street').hidden = !v.street;
   el('youAre').textContent = mySeat >= 0 ? `you are seat ${mySeat}` : 'observing';
+
+  // Say which kind of deal this was. A player told nothing would reasonably assume the
+  // stronger one, so the weaker one is labelled explicitly.
+  const dealTag = el('dealKind');
+  if (v.street) {
+    dealTag.hidden = false;
+    if (data.dealerless) {
+      dealTag.textContent = 'dealerless';
+      dealTag.className = 'pill';
+      dealTag.title = 'Each seat held its own cards. Nothing else, including this server, could read them.';
+    } else {
+      dealTag.textContent = 'server-dealt';
+      dealTag.className = 'pill warn';
+      dealTag.title = 'A seat had no agent, so the server shuffled. It can see the cards.';
+    }
+  } else dealTag.hidden = true;
 
   el('stakes').innerHTML = '';
   const stake = (l, val) => {
