@@ -362,3 +362,6 @@ func DecodeDeck(raw [][]byte) (mentalpoker.Deck, error) {
 	}
 	return mentalpoker.DeckFromPoints(pts)
 }
+
+// Session returns the session this hand player sends and receives over.
+func (h *HandPlayer) Session() *Session { return h.session }

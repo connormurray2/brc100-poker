@@ -77,16 +77,39 @@ Confirmed empirically. The pot output appears in its basket with `spendable=fals
 absent from the balance, because only change is minted into the UTXO store. The application
 owns pot-UTXO bookkeeping, exactly as `design.md` D7 assumes.
 
-### 4. A wallet with fragmented, unconfirmed coins stops being able to fund
+### 4. An abandoned action leaves a phantom coin that poisons coin selection
 
-After several faucet claims and spike runs, a wallet holding 190,202 sat across 9 spendable
-outputs could not fund a **1,000 sat** payment: `funder: not enough funds`. Fresh wallets
-funded immediately. The cause is not a shortfall — it is coin selection against fragmented
-and partly-unconfirmed state, plausibly interacting with `WithRequiredChangeOutput`.
+Repeatedly, a wallet with a healthy balance became unable to fund even a 500 sat payment:
 
-Practical consequence for the table service: **do not assume a positive balance means a
-fundable wallet.** Surface funding failures as a distinct operational state, and prefer a
-few consolidated coins over many small ones.
+```
+basket default: 10 outputs, 196301 sat total, 95936 sat spendable across 8
+Balance() = 95936, claimableInDefault = 8
+   500 sat probe: FAILED — funder: not enough funds
+```
+
+**Root cause: an output with an all-zero txid.** Listing the outputs shows
+
+```
+0000000000000000000000000000000000000000000000000000000000000000.0   365 sat  spendable=false
+```
+
+That is the change output of a settlement that was built but never broadcast — the run failed
+at verification, so the action was abandoned with its change already recorded against a txid
+that does not exist. Its presence blocks the funder entirely: every probe fails regardless of
+amount, even though eight genuinely spendable coins remain and `BasketClaimableCount` reports
+them as claimable.
+
+Two hypotheses tested and **disproved**: it is not `WithRequiredChangeOutput` (the same
+failure occurs with that option removed) and it is not a real shortfall (500 sat fails against
+95,936 sat).
+
+Consequences for the table service, in order of importance:
+
+1. **Abandon actions explicitly.** A `CreateAction` that will not be completed must be aborted
+   so its provisional change is released, rather than left for the funder to trip over.
+2. **A positive balance does not mean a fundable wallet.** Surface funding failure as its own
+   operational state, and check for zero-txid outputs when diagnosing it.
+3. Prefer a few consolidated coins over many small ones.
 
 ### 5. Teratestnet block production is intermittent
 
@@ -133,6 +156,27 @@ blob from `tx.EF()`, not hex and not plain raw bytes. Passing hex-as-bytes is re
 malformed encoding. EF carries each input's source satoshis and locking script, which is what
 lets the validator check the script without fetching ancestors.
 
+**A complete hand for real value.** `internal/e2e/hand_integration_test.go` joins the game and
+money layers: two seats deal with mental poker over the transport, play the hand, and settle
+the pot to the winner with both signatures. On teratestnet:
+
+```
+pot funded: 2c64b4de…:0 for 4000 sat
+refund co-signed and verified, spendable from height 29714
+seat 0 holds [3d Ts], seat 1 holds [Jd 9c], board [Ah 5d Jh Jc 4d]
+hand complete: seat 1 wins
+both seats verified the settlement against their own expectation
+settlement broadcast 158fdb59…, mined at height 29666
+winner balance 100000 -> 103600 sat (delta +3600)
+```
+
+The first run of this test **failed at verification**, and that was the design working: the
+wallet added a 365 sat change output to pay the settlement's fee, and the skim check refused an
+output the expectation did not account for. A legitimate change output has to be *declared*,
+not tolerated — which is exactly the property that makes an illegitimate one refusable.
+
 ## Not yet proven
 
-- **A full hand for real value.** Task 8.16, which needs the game and money layers joined.
+Every money mechanism in the design is now demonstrated on-chain. What remains is breadth
+rather than risk: more seats than two in a real-value hand, and the deferred features listed in
+the proposal.

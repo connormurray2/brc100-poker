@@ -91,10 +91,10 @@
 - [x] 8.1 Implement the pot locking script requiring every seat's authorisation
 - [x] 8.2 Implement the application-owned pot ledger recording pot outputs and their state
 - [x] 8.3 Implement the write-ahead record around the sign and broadcast boundary
-- [ ] 8.4 Implement refund construction and enforce in code that no stake is committed before its refund is held
-- [ ] 8.5 Implement buy-in funding into the pot, refusing to start a hand on a partial pot while preserving funded seats' refunds
-- [ ] 8.6 Implement settlement construction paying the winner to a spendable derived payment, with value conservation asserted
-- [ ] 8.7 Implement proposal distribution so every seat can reconstruct exactly what it is asked to sign and confirm all seats got the same proposal
+- [x] 8.4 Implement refund construction and enforce in code that no stake is committed before its refund is held
+- [x] 8.5 Implement buy-in funding into the pot, refusing to start a hand on a partial pot while preserving funded seats' refunds
+- [x] 8.6 Implement settlement construction paying the winner to a spendable derived payment, with value conservation asserted
+- [x] 8.7 Implement proposal distribution so every seat can reconstruct exactly what it is asked to sign and confirm all seats got the same proposal
 - [x] 8.8 Implement independent per-seat verification against the seat's own hand record, refusing a wrong winner, altered amount, unexpected output, or unexpected input
 - [x] 8.9 Implement local script evaluation before broadcast
 - [x] 8.10 Implement signature collection, ordered assembly, rejection of invalid signatures with attribution, and refusal to broadcast an incomplete set
@@ -103,7 +103,7 @@
 - [ ] 8.13 Prove by test that a settlement and its hand's refunds cannot both succeed
 - [ ] 8.14 Implement crash recovery that determines from the ledger whether a transaction was broadcast, without double-spending or abandoning the pot
 - [ ] 8.15 Implement player-visible money state for commitment, settlement, and a stalled hand including refund availability
-- [ ] 8.16 Play a complete hand for real value on Teratestnet between independent wallets: buy-in, deal, betting, showdown, settlement, and payout
+- [x] 8.16 Play a complete hand for real value on Teratestnet between independent wallets: buy-in, deal, betting, showdown, settlement, and payout
 - [x] 8.17 Test the stall path for real: fund a pot, have a seat refuse to sign, and confirm every other seat recovers its stake via refund
 
 ## 9. Deployment
