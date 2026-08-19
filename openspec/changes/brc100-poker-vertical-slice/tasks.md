@@ -54,10 +54,10 @@
 
 ## 6. Game core port
 
-- [ ] 6.1 Choose the single game stack to carry forward, and record what is deleted and why
-- [ ] 6.2 Port the card model and deck using a cryptographically secure random source
-- [ ] 6.3 Port the hand evaluator, including wheel straights, kickers, and the exactly-two-hole-cards constraint; fix the pre-river board bug rather than reproducing it
-- [ ] 6.4 Port the exhaustive evaluator test across all 2,598,960 distinct five-card hands, asserting zero category and ordering errors
+- [x] 6.1 Choose the single game stack to carry forward, and record what is deleted and why
+- [x] 6.2 Port the card model and deck using a cryptographically secure random source
+- [x] 6.3 Port the hand evaluator, including wheel straights, kickers, and the exactly-two-hole-cards constraint; fix the pre-river board bug rather than reproducing it
+- [x] 6.4 Port the exhaustive evaluator test across all 2,598,960 distinct five-card hands, asserting zero category and ordering errors
 - [ ] 6.5 Port the secp256k1 primitives the game protocol needs — point multiply, scalar inverse and arithmetic, card base points, point validation — and omit the wallet-superseded key generation, signing, and DER encoding
 - [ ] 6.6 Port the commutative-encryption deck: public card encodings, mask application and stripping, and fail-closed validation of hostile input
 - [ ] 6.7 Add tests proving masks commute, strip in any order, and that a partially unmasked card matches no public card
