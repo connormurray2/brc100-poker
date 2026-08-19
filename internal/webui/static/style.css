@@ -1,0 +1,158 @@
+/* A dark felt palette: this is a poker table, and a bright page fights that. */
+:root {
+  --bg: #10161c;
+  --panel: #18212a;
+  --panel-2: #1f2b36;
+  --line: #2c3a47;
+  --text: #e6edf3;
+  --muted: #8fa3b5;
+  --accent: #4ade80;
+  --warn: #fbbf24;
+  --bad: #f87171;
+  --felt: #14532d;
+  --felt-2: #166534;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  padding: 0 1.25rem 3rem;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+}
+
+header {
+  display: flex; align-items: baseline; gap: 1rem;
+  padding: 1.5rem 0 0.25rem;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 1rem;
+}
+h1 { font-size: 1.35rem; margin: 0; letter-spacing: -0.01em; }
+h2 { font-size: 1rem; margin: 0 0 0.75rem; letter-spacing: 0.01em; }
+.meta { margin-left: auto; display: flex; gap: 0.5rem; }
+
+.tag {
+  font: 600 11px ui-monospace, monospace;
+  text-transform: uppercase; letter-spacing: 0.06em;
+  padding: 0.2rem 0.5rem; border-radius: 999px;
+  background: var(--panel-2); border: 1px solid var(--line);
+}
+.muted { color: var(--muted); }
+
+.custody {
+  margin: 0 0 1.25rem; color: var(--muted); font-size: 0.9rem;
+}
+
+main { display: grid; gap: 1rem; max-width: 62rem; }
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 1.1rem 1.2rem;
+}
+
+.controls { display: flex; flex-wrap: wrap; gap: 0.9rem; align-items: end; }
+label { display: grid; gap: 0.3rem; font-size: 0.8rem; color: var(--muted); }
+select, button {
+  font: inherit; color: var(--text);
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 6px; padding: 0.45rem 0.6rem;
+}
+button { cursor: pointer; }
+button:hover { border-color: var(--muted); }
+
+.hint { color: var(--muted); font-size: 0.87rem; margin: 0.8rem 0 0; }
+
+.tableHead { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.9rem; }
+.tableHead h2 { margin: 0; font: 600 1rem ui-monospace, monospace; }
+.pill {
+  font: 600 11px ui-monospace, monospace; text-transform: uppercase;
+  letter-spacing: 0.05em; padding: 0.2rem 0.55rem; border-radius: 999px;
+  background: rgba(74,222,128,0.12); color: var(--accent);
+  border: 1px solid rgba(74,222,128,0.3);
+}
+.pill.muted { background: var(--panel-2); color: var(--muted); border-color: var(--line); }
+
+.stakes {
+  display: flex; flex-wrap: wrap; gap: 1.25rem;
+  font-size: 0.85rem; color: var(--muted);
+  padding-bottom: 0.9rem; border-bottom: 1px solid var(--line);
+  margin-bottom: 1rem;
+}
+.stakes b { color: var(--text); font-weight: 600; }
+
+/* The felt: board cards and the pot. */
+.felt {
+  background: linear-gradient(160deg, var(--felt), var(--felt-2));
+  border: 1px solid #0c3d20;
+  border-radius: 12px;
+  padding: 1.4rem 1rem;
+  display: grid; gap: 0.9rem; justify-items: center;
+}
+.board { display: flex; gap: 0.5rem; min-height: 74px; align-items: center; }
+.pot {
+  font: 600 0.95rem ui-monospace, monospace;
+  background: rgba(0,0,0,0.35); border-radius: 999px;
+  padding: 0.3rem 0.8rem;
+}
+
+/* A card. Red suits are red, which is the one piece of skeuomorphism worth keeping. */
+.card {
+  width: 48px; height: 68px; border-radius: 6px;
+  background: #f8fafc; color: #0f172a;
+  display: grid; place-items: center;
+  font: 700 1.05rem ui-monospace, monospace;
+  box-shadow: 0 2px 6px rgba(0,0,0,0.4);
+}
+.card.red { color: #b91c1c; }
+.card.back {
+  background: repeating-linear-gradient(45deg, #334155, #334155 5px, #475569 5px, #475569 10px);
+  color: transparent;
+}
+.card.empty {
+  background: rgba(255,255,255,0.06); box-shadow: none;
+  border: 1px dashed rgba(255,255,255,0.18);
+}
+
+.seats { display: grid; gap: 0.6rem; margin-top: 1rem; }
+.seat {
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: 8px; padding: 0.75rem 0.9rem;
+  display: grid; gap: 0.5rem;
+}
+.seat.toact { border-color: var(--accent); box-shadow: 0 0 0 1px rgba(74,222,128,0.25); }
+.seat.folded { opacity: 0.5; }
+.seatTop { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; }
+.seatName { font: 600 0.9rem ui-monospace, monospace; }
+.badge {
+  font: 600 10px ui-monospace, monospace; text-transform: uppercase;
+  letter-spacing: 0.05em; padding: 0.15rem 0.4rem; border-radius: 4px;
+  background: var(--line); color: var(--muted);
+}
+.badge.ok  { background: rgba(74,222,128,0.15); color: var(--accent); }
+.badge.warn{ background: rgba(251,191,36,0.15); color: var(--warn); }
+.badge.bad { background: rgba(248,113,113,0.15); color: var(--bad); }
+.seatMoney { font-size: 0.85rem; color: var(--muted); }
+.seatCards { display: flex; gap: 0.4rem; }
+.stacks { margin-left: auto; font: 600 0.85rem ui-monospace, monospace; }
+
+.stall {
+  background: rgba(248,113,113,0.1);
+  border: 1px solid rgba(248,113,113,0.35);
+  color: #fecaca;
+  border-radius: 8px; padding: 0.75rem 0.9rem;
+  margin-top: 1rem; font-size: 0.88rem;
+}
+
+.code {
+  background: #0d1319; border: 1px solid var(--line);
+  border-radius: 8px; padding: 0.85rem;
+  font: 12.5px/1.6 ui-monospace, monospace;
+  color: #cbd5e1; overflow-x: auto; margin: 0.8rem 0 0;
+  white-space: pre;
+}
+
+footer { margin-top: 1.5rem; font-size: 0.8rem; }

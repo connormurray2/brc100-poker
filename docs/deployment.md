@@ -20,15 +20,21 @@ Approximately $27/month: $12 droplet + $15 database.
 
 | Path | |
 |---|---|
-| `/` | JSON index: version, network, the table's identity key, stakes, and the endpoint list |
+| `/` | Browser UI: the felt, board, seats, stacks and each seat's money state |
+| `/api/info` | JSON: version, network, the table's identity key, custody statement |
+| `/api/tables` | JSON: every table, without hole cards |
+| `/api/table?id=&seat=` | JSON: one table for one seat. Hole cards ONLY for that seat |
 | `/livez` | Liveness — the process only |
 | `/readyz` | Readiness, plus whether it is fit to hold value |
 | `/table?table=<id>` | Game transport; a WebSocket upgrade, so a plain GET returns 426 |
 
-The root index exists so opening the URL in a browser explains what the service is and hands over
-the identity key a player's agent needs to authorise. Any other path is a genuine 404 rather than
-the index served for everything, so a wrong path says so instead of letting a client believe it
-reached something.
+The UI is a renderer: it holds no keys, signs nothing, and cannot mutate game state. A browser tab
+is not a place to keep a private key, and the agent already exists to hold one — so where a
+signature is needed the page says so and shows the command to run an agent.
+
+**Hole-card privacy is enforced server-side, not in the browser.** `/api/table` takes a seat and
+returns a different document for each one: an observer receives no cards at all, and a seat receives
+only its own. Filtering in the browser would mean the cards were sent, which is not privacy.
 
 ## Security posture
 

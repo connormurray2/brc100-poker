@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BRC-100 Poker</title>
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+<header>
+  <h1>BRC-100 Poker</h1>
+  <div class="meta">
+    <span id="network" class="tag">…</span>
+    <span id="version" class="tag muted">…</span>
+  </div>
+</header>
+
+<p class="custody" id="custody">…</p>
+
+<main>
+  <section class="panel">
+    <h2>Table</h2>
+    <div class="controls">
+      <label>Table
+        <select id="tableSelect"><option value="">— none —</option></select>
+      </label>
+      <label>View as seat
+        <select id="seatSelect">
+          <option value="-1">Observer</option>
+          <option value="0">Seat 0</option>
+          <option value="1">Seat 1</option>
+          <option value="2">Seat 2</option>
+          <option value="3">Seat 3</option>
+          <option value="4">Seat 4</option>
+          <option value="5">Seat 5</option>
+        </select>
+      </label>
+      <button id="refresh">Refresh</button>
+    </div>
+    <p class="hint">
+      Hole cards are only ever sent to the seat that owns them. Choosing a seat here shows that
+      seat's view; as an observer you see no one's cards.
+    </p>
+  </section>
+
+  <section class="panel" id="tablePanel" hidden>
+    <div class="tableHead">
+      <h2 id="tableId">—</h2>
+      <span class="pill" id="phase">—</span>
+      <span class="pill muted" id="street"></span>
+    </div>
+
+    <div class="stakes" id="stakes"></div>
+
+    <div class="felt">
+      <div class="board" id="board"></div>
+      <div class="pot" id="pot">Pot 0 sat</div>
+    </div>
+
+    <div id="stall" class="stall" hidden></div>
+
+    <div class="seats" id="seats"></div>
+  </section>
+
+  <section class="panel" id="emptyPanel">
+    <h2>No table yet</h2>
+    <p class="hint">
+      The table service is running but has no live hand to show. A hand appears here once a table
+      is created and seats are taken.
+    </p>
+  </section>
+
+  <section class="panel">
+    <h2>Playing for real</h2>
+    <p class="hint">
+      This page shows a hand; it cannot sign for you. Your key stays in your own agent, which
+      verifies every settlement against its own record of the hand before asking you to approve it.
+    </p>
+<pre class="code"># generate a key and fund it on teratestnet
+go run ./cmd/keygen -out secrets/player.key
+go run ./cmd/fund   -key secrets/player.key -db secrets/player.db
+
+# run your agent, authorising this table
+go run ./cmd/agent -key secrets/player.key -db secrets/player.db \
+  -table <span id="tableKey">…</span></pre>
+  </section>
+</main>
+
+<footer>
+  <span id="updated" class="muted"></span>
+</footer>
+
+<script src="/app.js"></script>
+</body>
+</html>

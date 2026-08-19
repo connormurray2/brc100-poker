@@ -7,7 +7,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -20,9 +19,13 @@ import (
 	"github.com/galt-tr/go-arcade-toolbox/pkg/arcade"
 
 	"github.com/cmurray/brc100-poker/internal/config"
+	"github.com/cmurray/brc100-poker/internal/game/cards"
+	"github.com/cmurray/brc100-poker/internal/game/engine"
 	"github.com/cmurray/brc100-poker/internal/health"
+	"github.com/cmurray/brc100-poker/internal/protocol/table"
 	"github.com/cmurray/brc100-poker/internal/protocol/transport"
 	"github.com/cmurray/brc100-poker/internal/wallet/brc100"
+	"github.com/cmurray/brc100-poker/internal/webui"
 )
 
 // version is stamped at build time.
@@ -122,13 +125,19 @@ func run() error {
 		}
 	}()
 
+	// The browser client and the JSON it reads. The UI holds no keys and cannot mutate game
+	// state: it renders what the server tells it and points at the player's own agent for
+	// anything needing a signature.
+	ui := webui.NewStore()
+	if err := seedDemoTable(ui, cfg); err != nil {
+		return fmt.Errorf("seeding the demo table: %w", err)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/livez", reporter.LivenessHandler())
 	mux.HandleFunc("/readyz", reporter.ReadinessHandler())
 	mux.Handle("/table", hub)
-	// A root index, so opening the URL in a browser explains what this is and where the
-	// endpoints are rather than returning a bare 404.
-	mux.HandleFunc("/", indexHandler(cfg, identity, version))
+	mux.Handle("/", ui.Handler(identity, version, string(config.Network)))
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddress,
@@ -160,60 +169,89 @@ func run() error {
 	return nil
 }
 
-// indexHandler describes the service at its root.
+// seedDemoTable publishes a demonstration hand so the UI has something to render.
 //
-// Anything other than the exact root path is a genuine 404: a wrong path should say so rather than
-// silently serving the index and letting a client believe it reached something.
-func indexHandler(cfg config.Service, identityKey, version string) http.HandlerFunc {
-	type endpoint struct {
-		Path        string `json:"path"`
-		Description string `json:"description"`
+// A deployed service with no live table would show an empty lobby, which tells a visitor nothing
+// about whether the thing works. This is a rendered hand, not a real one: no pot is funded and no
+// money moves. It is labelled so, because a demo that looks like a live hand would be misleading.
+func seedDemoTable(ui *webui.Store, cfg config.Service) error {
+	deck, err := cards.Shuffled()
+	if err != nil {
+		return err
 	}
-	type index struct {
-		Service     string     `json:"service"`
-		Version     string     `json:"version"`
-		Network     string     `json:"network"`
-		IdentityKey string     `json:"identityKey"`
-		Seats       int        `json:"seats"`
-		BuyInSats   uint64     `json:"buyInSatoshis"`
-		SmallBlind  uint64     `json:"smallBlind"`
-		BigBlind    uint64     `json:"bigBlind"`
-		Custody     string     `json:"custody"`
-		Endpoints   []endpoint `json:"endpoints"`
+	stacks := make([]int64, cfg.Seats)
+	for i := range stacks {
+		stacks[i] = int64(cfg.BuyInSatoshis)
 	}
 
-	// The identity key is public and a player needs it: it is what their agent authorises.
-	body := index{
-		Service:     "brc100-poker table service",
-		Version:     version,
-		Network:     "teratestnet",
-		IdentityKey: identityKey,
-		Seats:       cfg.Seats,
-		BuyInSats:   cfg.BuyInSatoshis,
-		SmallBlind:  cfg.SmallBlind,
-		BigBlind:    cfg.BigBlind,
-		Custody:     "non-custodial: this service holds no player key and cannot move a pot alone",
-		Endpoints: []endpoint{
-			{Path: "/livez", Description: "liveness — is the process running"},
-			{Path: "/readyz", Description: "readiness — can it serve play, and is it fit to hold value"},
-			{Path: "/table?table=<id>", Description: "game transport (WebSocket upgrade)"},
-		},
+	st, err := engine.New(engine.Config{
+		Stacks:     stacks,
+		Button:     0,
+		SmallBlind: int64(cfg.SmallBlind),
+		BigBlind:   int64(cfg.BigBlind),
+		Deck:       deck,
+	})
+	if err != nil {
+		return err
+	}
+	// Play to the flop so the board is not empty: an all-blank felt reads as broken rather
+	// than as waiting.
+	if err := st.Apply(engine.Action{Kind: engine.Call, Seat: st.ToAct}); err != nil {
+		return err
+	}
+	if st.ToAct >= 0 {
+		if err := st.Apply(engine.Action{Kind: engine.Check, Seat: st.ToAct}); err != nil {
+			return err
+		}
 	}
 
-	return func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			http.NotFound(w, r)
-			return
+	seats := make([]table.Seat, 0, cfg.Seats)
+	for i := 0; i < cfg.Seats; i++ {
+		seats = append(seats, table.Seat{
+			Index:       i,
+			IdentityKey: fmt.Sprintf("demo-seat-%d", i),
+			Funded:      true,
+			RefundHeld:  true,
+		})
+	}
+
+	money, err := table.NewMoneyTracker(cfg.Seats, cfg.BuyInSatoshis, cfg.BuyInSatoshis*uint64(cfg.Seats), 1)
+	if err != nil {
+		return err
+	}
+	money.SetHand("demo")
+	for i := 0; i < cfg.Seats; i++ {
+		if err := money.RefundHeld(i); err != nil {
+			return err
 		}
-		w.Header().Set("content-type", "application/json")
-		enc := json.NewEncoder(w)
-		enc.SetIndent("", "  ")
-		if err := enc.Encode(body); err != nil {
-			// The response is already partly written by this point, so there is nothing
-			// useful to send; record it and move on.
-			_ = err
+		if err := money.Committed(i); err != nil {
+			return err
 		}
 	}
+
+	view := webui.TableView{
+		TableID:          "demo",
+		Phase:            "demonstration (no real value at stake)",
+		Street:           st.Street.String(),
+		Seats:            cfg.Seats,
+		BuyInSatoshis:    cfg.BuyInSatoshis,
+		SmallBlind:       cfg.SmallBlind,
+		BigBlind:         cfg.BigBlind,
+		RefundLockHeight: cfg.RefundLockBlocks,
+		Players:          webui.FromEngine(st, seats, money),
+		Board:            webui.BoardStrings(st.Board),
+		Pot:              st.Pot(),
+		ToAct:            st.ToAct,
+		StalledSeat:      -1,
+	}
+	if err := ui.PutTable(view); err != nil {
+		return err
+	}
+	// Each seat's own cards, released only to that seat.
+	for i, s := range st.Seats {
+		ui.SetHole("demo", i, s.Hole)
+	}
+	return nil
 }
 
 // statusObserver applies transaction status updates.
