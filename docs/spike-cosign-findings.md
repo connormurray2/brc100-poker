@@ -96,11 +96,14 @@ needs a generous timeout and must degrade gracefully rather than hang.
 
 ## Not yet proven
 
-- **The payout internalize end-to-end.** The derivation is now correct — the locking-script
-  mismatch is gone — but confirming a credited, spendable payout needs a mined settlement,
-  which needs the network to produce a block within the wait window. The spike reports this
-  as SKIPPED rather than failing, because the co-signing result is already established by
-  that point.
+- **The payout internalize end-to-end.** The derivation is now correct and the merkle proof
+  now **verifies** — internalizing a mined settlement gets all the way to the database,
+  failing only on a UNIQUE constraint when replayed against the wallet that built the
+  transaction (that wallet already has the output row). Proving receipt therefore needs a
+  wallet that did not build the transaction, which
+  `receive_integration_test.go` does: fresh key, fresh database, pay it a BRC-29 output,
+  internalize, assert the balance and spendability. It currently SKIPs because no block
+  arrived within six minutes. Run it with `make integration` when the network is mining.
 - **n-of-n beyond 2-of-2.** The mechanism generalises, but only 2-of-2 has been run.
 - **A refusing seat and the refund broadcast.** Task 8.17 covers this; the finality gate is
   proven but no refund has been broadcast after its locktime matured.
