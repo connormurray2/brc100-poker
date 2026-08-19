@@ -47,10 +47,10 @@
 
 ## 5. Player agent
 
-- [ ] 5.1 Implement the agent binary: load the player's own key, construct their wallet, and serve the substrate endpoint
-- [ ] 5.2 Implement the approval surface presenting each signing request's material terms to the player
-- [ ] 5.3 Implement the agent's own record of its stake, refund, and hand state
-- [ ] 5.4 Document how a player generates a key, funds it from a BRC-100 wallet on Teratestnet, and starts the agent
+- [x] 5.1 Implement the agent binary: load the player's own key, construct their wallet, and serve the substrate endpoint
+- [x] 5.2 Implement the approval surface presenting each signing request's material terms to the player
+- [x] 5.3 Implement the agent's own record of its stake, refund, and hand state
+- [x] 5.4 Document how a player generates a key, funds it from a BRC-100 wallet on Teratestnet, and starts the agent
 
 ## 6. Game core port
 
@@ -111,7 +111,7 @@
 - [x] 9.1 Write the container image build for the table service, since the toolbox provides none
 - [x] 9.2 Implement configuration validation that refuses to start on missing settings or an unsafe production configuration, and logs the effective configuration without secrets
 - [x] 9.3 Supply secrets at runtime and add a test asserting no key or credential appears in logs or errors
-- [ ] 9.4 Assert by test that the table service holds no player private key
+- [x] 9.4 Assert by test that the table service holds no player private key
 - [ ] 9.5 Provision the Digital Ocean droplet in nyc1 and managed Postgres, keeping unauthenticated interfaces off the public network
 - [ ] 9.6 Configure automated database backups and surface backup failure
 - [ ] 9.7 Perform and document a restore drill proving a restored backup yields a working wallet, and gate real-value play on it

@@ -2,8 +2,16 @@ GO ?= go
 
 .PHONY: build vet test test-race lint check integration tidy
 
+VERSION ?= dev
+LDFLAGS := -s -w -X main.version=$(VERSION)
+
 build:
 	$(GO) build ./...
+
+# The two deployable binaries, version-stamped.
+binaries:
+	$(GO) build -trimpath -ldflags="$(LDFLAGS)" -o dist/table ./cmd/table
+	$(GO) build -trimpath -ldflags="$(LDFLAGS)" -o dist/agent ./cmd/agent
 
 vet:
 	$(GO) vet ./...

@@ -274,3 +274,20 @@ func FindPotInput(tx *transaction.Transaction, txid string, vout uint32) (int, e
 	}
 	return 0, fmt.Errorf("cosign: the transaction does not spend %s:%d", txid, vout)
 }
+
+// PotScriptFromHex parses a pot locking script.
+//
+// A seat stores the script rather than reconstructing it from seat keys, because reconstructing
+// depends on getting the key order right and a mismatch would produce a signature over the
+// wrong preimage — a failure that surfaces as an opaque script error rather than as a mistake
+// about key order.
+func PotScriptFromHex(s string) (*script.Script, error) {
+	if s == "" {
+		return nil, errors.New("cosign: no pot script")
+	}
+	out, err := script.NewFromHex(s)
+	if err != nil {
+		return nil, fmt.Errorf("cosign: parsing the pot script: %w", err)
+	}
+	return out, nil
+}

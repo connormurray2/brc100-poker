@@ -30,6 +30,10 @@ type Expectation struct {
 	// MaxFee bounds what the settlement may consume in fees. Without it a proposal could
 	// pay the winner a token amount and burn the rest.
 	MaxFee uint64
+
+	// PotScriptHex is the pot's locking script. A seat needs it to build the sighash
+	// preimage, since the wallet does not retain the script for an output it cannot sign.
+	PotScriptHex string
 }
 
 // Proposal is a settlement a seat has been asked to sign.
