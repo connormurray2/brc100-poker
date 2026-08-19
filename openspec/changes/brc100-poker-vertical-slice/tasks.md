@@ -88,7 +88,7 @@
 
 ## 8. Pot, co-signing, and settlement
 
-- [ ] 8.1 Implement the pot locking script requiring every seat's authorisation
+- [x] 8.1 Implement the pot locking script requiring every seat's authorisation
 - [x] 8.2 Implement the application-owned pot ledger recording pot outputs and their state
 - [x] 8.3 Implement the write-ahead record around the sign and broadcast boundary
 - [ ] 8.4 Implement refund construction and enforce in code that no stake is committed before its refund is held
@@ -96,9 +96,9 @@
 - [ ] 8.6 Implement settlement construction paying the winner to a spendable derived payment, with value conservation asserted
 - [ ] 8.7 Implement proposal distribution so every seat can reconstruct exactly what it is asked to sign and confirm all seats got the same proposal
 - [ ] 8.8 Implement independent per-seat verification against the seat's own hand record, refusing a wrong winner, altered amount, unexpected output, or unexpected input
-- [ ] 8.9 Implement local script evaluation before broadcast
-- [ ] 8.10 Implement signature collection, ordered assembly, rejection of invalid signatures with attribution, and refusal to broadcast an incomplete set
-- [ ] 8.11 Prove by test that output order and change presence cannot change after signing, and that modifying a signed field invalidates collected signatures
+- [x] 8.9 Implement local script evaluation before broadcast
+- [x] 8.10 Implement signature collection, ordered assembly, rejection of invalid signatures with attribution, and refusal to broadcast an incomplete set
+- [x] 8.11 Prove by test that output order and change presence cannot change after signing, and that modifying a signed field invalidates collected signatures
 - [ ] 8.12 Implement non-cooperation handling: bounded outcome, attribution, and a preserved recovery path for every other seat
 - [ ] 8.13 Prove by test that a settlement and its hand's refunds cannot both succeed
 - [ ] 8.14 Implement crash recovery that determines from the ledger whether a transaction was broadcast, without double-spending or abandoning the pot
