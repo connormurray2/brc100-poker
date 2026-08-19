@@ -314,8 +314,11 @@ func TestDedupAppliesOnce(t *testing.T) {
 // An empty id carries no de-duplication information, so it must not be suppressed.
 func TestDedupTreatsEmptyIDAsNew(t *testing.T) {
 	d := NewDedup(16)
-	if !d.FirstSeen("") || !d.FirstSeen("") {
-		t.Fatal("an empty id was suppressed as a duplicate")
+	if !d.FirstSeen("") {
+		t.Fatal("the first empty id was suppressed")
+	}
+	if !d.FirstSeen("") {
+		t.Fatal("a repeated empty id was suppressed as a duplicate")
 	}
 }
 
