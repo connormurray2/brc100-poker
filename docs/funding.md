@@ -28,19 +28,46 @@ funded ancestors' proofs, so there are no confirmations to wait for).
 **Note the host.** The page's own example shows `faucet.teratestnet.org`, which does not
 resolve. The live host is `faucet-ttn.bsvblockchain.tech`.
 
-**Status as of 2026-08-19: the API claim path is failing server-side.** Both
-`POST /api/claim` (legacy address) and `POST /api/claim/wallet` (identity key) return:
+**The faucet pays BRC-29, not a plain address.** This is the part that is easy to get
+wrong. `POST /api/claim/wallet` takes `{identityKey, captchaToken}` and returns:
+
+```json
+{"txid":"…","amount":100000,"atomicBEEF":"…","outputIndex":0,
+ "derivationPrefix":"…","derivationSuffix":"…","senderIdentityKey":"…"}
+```
+
+The faucet derives a key from the claiming wallet's identity key and pays *that*. The
+client must then internalize the returned transaction as a **wallet payment**, supplying
+the derivation material — a basket insertion records none, so the coin would be visible
+and permanently unspendable. `cmd/fund` does both halves:
+
+```sh
+go run ./cmd/fund -key secrets/table.key -db secrets/table.db -captcha "<turnstile>"
+```
+
+The captcha token comes from the faucet page; `-bearer` with an API key skips it.
+
+**Status as of 2026-08-19: the faucet is failing server-side.** Both claim endpoints return
+HTTP **503**:
 
 ```json
 {"error":"Faucet error: merged Beef failed validation.","code":"faucet_error"}
 ```
 
-This was reproduced against three independently generated addresses, on both endpoints,
-with well-formed requests — the faucet validates the address *before* the captcha, and a
-malformed address returns a distinguishable `"Malformed address"` error, so the request
-shape is not the problem. `GET /api/stats` shows the faucet has served claims previously
-(236 payouts, 23.6M sats), so this is a fault in its treasury/BEEF-merging step rather than
-a rate limit. Retry later, or use the web UI, which may take a different code path.
+Evidence that this is the faucet and not our request:
+
+- The request now reaches the faucet's transaction-building step: a malformed address gets
+  a distinguishable `"Malformed address"` error, and an unparseable body gets
+  `"Invalid request body"`.
+- `GET /api/stats` has been frozen at 236 payouts / 23,600,000 sats, so nobody is claiming
+  successfully.
+- `GET /api/balance` shows a treasury of 4,975,994,756 sat (~49.76 BSV), so it is not out
+  of funds, and arcade itself answers 200.
+- The same failure occurs for three independently generated keys, on both endpoints.
+
+Our half of the flow is verified independently: the toolbox's own `examples/internalize`
+performs the identical BRC-29 wallet-payment internalize and yields a **spendable** coin,
+so only the faucet's own BEEF merge is broken. Retry later.
 
 ### 2. BSV Desktop
 
