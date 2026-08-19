@@ -74,8 +74,8 @@
 ## 7. Table coordination
 
 - [ ] 7.1 Port the transport interface unchanged, and implement it over WebSocket
-- [ ] 7.2 Implement sender-inclusive fan-out, since the seating handshake depends on a publish echoing back to its own sender
-- [ ] 7.3 Implement message de-duplication by id so a redelivered message is applied exactly once
+- [x] 7.2 Implement sender-inclusive fan-out, since the seating handshake depends on a publish echoing back to its own sender
+- [x] 7.3 Implement message de-duplication by id so a redelivered message is applied exactly once
 - [ ] 7.4 Replace the old periodic re-broadcast loop with explicit acknowledgement and targeted catch-up on reconnect
 - [ ] 7.5 Implement table lifecycle: creation with declared terms, advertisement, join, and close
 - [ ] 7.6 Bind each seat to a proven identity and reject messages not attributable to that seat, including an identity taking two seats
