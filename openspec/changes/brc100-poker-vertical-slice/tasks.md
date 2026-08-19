@@ -15,22 +15,22 @@
 - [x] 2.4 Start the monitor daemon with a status observer that is non-blocking, panic-free, and idempotent; assert exactly one status stream is opened
 - [x] 2.5 Implement the broadcast wrapper as the single path to Arcade, classifying accepted / rejected / backpressured / indeterminate, treating the rejection flag as authoritative even when no error is returned
 - [x] 2.6 Add retry policy to the wrapper: never retry a rejection, always retry backpressure after its indicated delay, reconcile an indeterminate outcome by querying status
-- [ ] 2.7 Implement funds entry via internalize-payment (the spendable form), and confirm a credited coin can subsequently be spent
+- [x] 2.7 Implement funds entry via internalize-payment (the spendable form), and confirm a credited coin can subsequently be spent
 - [x] 2.8 Implement network-value translation so no internal network name is ever returned at an exposed boundary
-- [ ] 2.9 Write integration tests against live Teratestnet covering funding, spending, and status progression to a settled state
+- [x] 2.9 Write integration tests against live Teratestnet covering funding, spending, and status progression to a settled state
 
 ## 3. Co-signing spike — go/no-go gate
 
-- [ ] 3.1 Build a standalone spike: two wallets in separate processes, each holding its own key
-- [ ] 3.2 Fund a 2-of-2 output with a custom locking script from one wallet
-- [ ] 3.3 Construct the spend with the two-step path, obtaining the signable transaction and its reference
-- [ ] 3.4 Collect a signature from each process independently and assemble the unlocking script in the order the locking script requires
-- [ ] 3.5 Disable output randomisation, pin the change output, and confirm signatures stay valid across repeated runs
-- [ ] 3.6 Keep the shared output in a basket separate from fee-paying coins and confirm it is never selected to pay a fee
-- [ ] 3.7 Over-declare the unlocking script length and confirm the fee is accepted
+- [x] 3.1 Build a standalone spike: two wallets in separate processes, each holding its own key
+- [x] 3.2 Fund a 2-of-2 output with a custom locking script from one wallet
+- [x] 3.3 Construct the spend with the two-step path, obtaining the signable transaction and its reference
+- [x] 3.4 Collect a signature from each process independently and assemble the unlocking script in the order the locking script requires
+- [x] 3.5 Disable output randomisation, pin the change output, and confirm signatures stay valid across repeated runs
+- [x] 3.6 Keep the shared output in a basket separate from fee-paying coins and confirm it is never selected to pay a fee
+- [x] 3.7 Over-declare the unlocking script length and confirm the fee is accepted
 - [ ] 3.8 Verify scripts locally before broadcast, then broadcast and confirm the transaction settles on Teratestnet
-- [ ] 3.9 Build a pre-signed nLockTime refund with a non-final sequence, gate finality client-side, and confirm it is refused before its locktime and accepted after
-- [ ] 3.10 Record the findings and confirm the design holds; if the spike fails, stop and revisit the approach before proceeding
+- [x] 3.9 Build a pre-signed nLockTime refund with a non-final sequence, gate finality client-side, and confirm it is refused before its locktime and accepted after
+- [x] 3.10 Record the findings and confirm the design holds; if the spike fails, stop and revisit the approach before proceeding
 
 ## 4. BRC-100 substrate
 
