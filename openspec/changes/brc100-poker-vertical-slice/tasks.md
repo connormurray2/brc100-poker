@@ -89,8 +89,8 @@
 ## 8. Pot, co-signing, and settlement
 
 - [ ] 8.1 Implement the pot locking script requiring every seat's authorisation
-- [ ] 8.2 Implement the application-owned pot ledger recording pot outputs and their state
-- [ ] 8.3 Implement the write-ahead record around the sign and broadcast boundary
+- [x] 8.2 Implement the application-owned pot ledger recording pot outputs and their state
+- [x] 8.3 Implement the write-ahead record around the sign and broadcast boundary
 - [ ] 8.4 Implement refund construction and enforce in code that no stake is committed before its refund is held
 - [ ] 8.5 Implement buy-in funding into the pot, refusing to start a hand on a partial pot while preserving funded seats' refunds
 - [ ] 8.6 Implement settlement construction paying the winner to a spendable derived payment, with value conservation asserted

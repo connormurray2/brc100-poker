@@ -4,13 +4,14 @@ go 1.26.6
 
 require (
 	github.com/bsv-blockchain/go-sdk v1.3.3
+	github.com/coder/websocket v1.8.12
 	github.com/galt-tr/go-arcade-toolbox v0.1.0
+	modernc.org/sqlite v1.55.0
 )
 
 require (
 	github.com/aerospike/aerospike-client-go/v8 v8.8.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
-	github.com/coder/websocket v1.8.12 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
 	github.com/go-co-op/gocron/v2 v2.16.5 // indirect
@@ -51,5 +52,4 @@ require (
 	modernc.org/libc v1.74.1 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-	modernc.org/sqlite v1.55.0 // indirect
 )
