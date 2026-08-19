@@ -15,39 +15,50 @@
   </div>
 </header>
 
-<p class="custody" id="custody">…</p>
-
 <main>
-  <section class="panel">
-    <h2>Table</h2>
-    <div class="controls">
-      <label>Table
-        <select id="tableSelect"><option value="">— none —</option></select>
-      </label>
-      <label>View as seat
-        <select id="seatSelect">
-          <option value="-1">Observer</option>
-          <option value="0">Seat 0</option>
-          <option value="1">Seat 1</option>
-          <option value="2">Seat 2</option>
-          <option value="3">Seat 3</option>
-          <option value="4">Seat 4</option>
-          <option value="5">Seat 5</option>
-        </select>
-      </label>
-      <button id="refresh">Refresh</button>
-    </div>
+  <!-- Step 1: connect the player's own agent. The key never comes here. -->
+  <section class="panel" id="connectPanel">
+    <h2>1 · Connect your wallet</h2>
     <p class="hint">
-      Hole cards are only ever sent to the seat that owns them. Choosing a seat here shows that
-      seat's view; as an observer you see no one's cards.
+      Your key stays in your own agent. This page never sees it, and cannot sign for you — it asks
+      your agent, and your agent asks you.
     </p>
+    <div class="controls">
+      <label>Your agent
+        <input id="agentUrl" type="text" value="http://127.0.0.1:8091" size="26">
+      </label>
+      <button id="connect" class="primary">Connect</button>
+    </div>
+    <div id="connectStatus" class="status"></div>
+<details>
+  <summary>Don't have an agent running?</summary>
+<pre class="code">go run ./cmd/keygen -out secrets/player.key
+go run ./cmd/fund   -key secrets/player.key -db secrets/player.db
+
+go run ./cmd/agent -key secrets/player.key -db secrets/player.db \
+  -listen 127.0.0.1:8091 \
+  -origin <span id="thisOrigin">…</span> \
+  -table <span id="tableKey">…</span></pre>
+</details>
   </section>
 
+  <!-- Step 2: take a seat and commit. -->
+  <section class="panel" id="seatPanel" hidden>
+    <h2>2 · Take a seat</h2>
+    <div class="controls">
+      <button id="join" class="primary">Join the table</button>
+      <button id="ready">I'm ready (commit buy-in)</button>
+    </div>
+    <div id="seatStatus" class="status"></div>
+  </section>
+
+  <!-- Step 3: the table. -->
   <section class="panel" id="tablePanel" hidden>
     <div class="tableHead">
       <h2 id="tableId">—</h2>
       <span class="pill" id="phase">—</span>
       <span class="pill muted" id="street"></span>
+      <span class="pill muted" id="youAre"></span>
     </div>
 
     <div class="stakes" id="stakes"></div>
@@ -58,38 +69,26 @@
     </div>
 
     <div id="stall" class="stall" hidden></div>
+    <div id="result" class="result" hidden></div>
+
+    <!-- The action bar: only what the engine says is legal right now. -->
+    <div id="actions" class="actions" hidden>
+      <span class="turnFlag">Your turn</span>
+      <button data-act="fold" class="act">Fold</button>
+      <button data-act="check" class="act">Check</button>
+      <button data-act="call" class="act">Call</button>
+      <span class="raiseGroup">
+        <input id="raiseTo" type="number" min="0" step="1">
+        <button data-act="raise" class="act primary">Raise to</button>
+      </span>
+    </div>
+    <div id="actError" class="actError" hidden></div>
 
     <div class="seats" id="seats"></div>
   </section>
-
-  <section class="panel" id="emptyPanel">
-    <h2>No table yet</h2>
-    <p class="hint">
-      The table service is running but has no live hand to show. A hand appears here once a table
-      is created and seats are taken.
-    </p>
-  </section>
-
-  <section class="panel">
-    <h2>Playing for real</h2>
-    <p class="hint">
-      This page shows a hand; it cannot sign for you. Your key stays in your own agent, which
-      verifies every settlement against its own record of the hand before asking you to approve it.
-    </p>
-<pre class="code"># generate a key and fund it on teratestnet
-go run ./cmd/keygen -out secrets/player.key
-go run ./cmd/fund   -key secrets/player.key -db secrets/player.db
-
-# run your agent, authorising this table
-go run ./cmd/agent -key secrets/player.key -db secrets/player.db \
-  -table <span id="tableKey">…</span></pre>
-  </section>
 </main>
 
-<footer>
-  <span id="updated" class="muted"></span>
-</footer>
-
+<footer><span id="updated" class="muted"></span></footer>
 <script src="/app.js"></script>
 </body>
 </html>

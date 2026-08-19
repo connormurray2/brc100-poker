@@ -19,8 +19,6 @@ import (
 	"github.com/galt-tr/go-arcade-toolbox/pkg/arcade"
 
 	"github.com/cmurray/brc100-poker/internal/config"
-	"github.com/cmurray/brc100-poker/internal/game/cards"
-	"github.com/cmurray/brc100-poker/internal/game/engine"
 	"github.com/cmurray/brc100-poker/internal/health"
 	"github.com/cmurray/brc100-poker/internal/protocol/table"
 	"github.com/cmurray/brc100-poker/internal/protocol/transport"
@@ -129,9 +127,19 @@ func run() error {
 	// state: it renders what the server tells it and points at the player's own agent for
 	// anything needing a signature.
 	ui := webui.NewStore()
-	if err := seedDemoTable(ui, cfg); err != nil {
-		return fmt.Errorf("seeding the demo table: %w", err)
+	// A playable table, so a visitor can take a seat and act rather than only watch.
+	live, err := webui.NewLiveTable(table.Terms{
+		TableID:          "live",
+		BuyInSatoshis:    cfg.BuyInSatoshis,
+		SmallBlind:       cfg.SmallBlind,
+		BigBlind:         cfg.BigBlind,
+		Seats:            cfg.Seats,
+		RefundLockHeight: cfg.RefundLockBlocks,
+	})
+	if err != nil {
+		return fmt.Errorf("creating the live table: %w", err)
 	}
+	ui.SetLive(live)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/livez", reporter.LivenessHandler())
@@ -165,91 +173,6 @@ func run() error {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutting down: %w", err)
-	}
-	return nil
-}
-
-// seedDemoTable publishes a demonstration hand so the UI has something to render.
-//
-// A deployed service with no live table would show an empty lobby, which tells a visitor nothing
-// about whether the thing works. This is a rendered hand, not a real one: no pot is funded and no
-// money moves. It is labelled so, because a demo that looks like a live hand would be misleading.
-func seedDemoTable(ui *webui.Store, cfg config.Service) error {
-	deck, err := cards.Shuffled()
-	if err != nil {
-		return err
-	}
-	stacks := make([]int64, cfg.Seats)
-	for i := range stacks {
-		stacks[i] = int64(cfg.BuyInSatoshis)
-	}
-
-	st, err := engine.New(engine.Config{
-		Stacks:     stacks,
-		Button:     0,
-		SmallBlind: int64(cfg.SmallBlind),
-		BigBlind:   int64(cfg.BigBlind),
-		Deck:       deck,
-	})
-	if err != nil {
-		return err
-	}
-	// Play to the flop so the board is not empty: an all-blank felt reads as broken rather
-	// than as waiting.
-	if err := st.Apply(engine.Action{Kind: engine.Call, Seat: st.ToAct}); err != nil {
-		return err
-	}
-	if st.ToAct >= 0 {
-		if err := st.Apply(engine.Action{Kind: engine.Check, Seat: st.ToAct}); err != nil {
-			return err
-		}
-	}
-
-	seats := make([]table.Seat, 0, cfg.Seats)
-	for i := 0; i < cfg.Seats; i++ {
-		seats = append(seats, table.Seat{
-			Index:       i,
-			IdentityKey: fmt.Sprintf("demo-seat-%d", i),
-			Funded:      true,
-			RefundHeld:  true,
-		})
-	}
-
-	money, err := table.NewMoneyTracker(cfg.Seats, cfg.BuyInSatoshis, cfg.BuyInSatoshis*uint64(cfg.Seats), 1)
-	if err != nil {
-		return err
-	}
-	money.SetHand("demo")
-	for i := 0; i < cfg.Seats; i++ {
-		if err := money.RefundHeld(i); err != nil {
-			return err
-		}
-		if err := money.Committed(i); err != nil {
-			return err
-		}
-	}
-
-	view := webui.TableView{
-		TableID:          "demo",
-		Phase:            "demonstration (no real value at stake)",
-		Street:           st.Street.String(),
-		Seats:            cfg.Seats,
-		BuyInSatoshis:    cfg.BuyInSatoshis,
-		SmallBlind:       cfg.SmallBlind,
-		BigBlind:         cfg.BigBlind,
-		RefundLockHeight: cfg.RefundLockBlocks,
-		Players:          webui.FromEngine(st, seats, money),
-		Board:            webui.BoardStrings(st.Board),
-		Pot:              st.Pot(),
-		ToAct:            st.ToAct,
-		StalledSeat:      -1,
-	}
-	if err := ui.PutTable(view); err != nil {
-		return err
-	}
-	// Each seat's own cards, released only to that seat.
-	for i, s := range st.Seats {
-		ui.SetHole("demo", i, s.Hole)
 	}
 	return nil
 }

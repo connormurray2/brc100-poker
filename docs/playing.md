@@ -30,7 +30,29 @@ on-chain and your wallet cannot spend it. See `docs/funding.md` for the detail.
 Alternatively, send yourself a payment from [BSV Desktop](https://bsvblockchain.org) on
 teratestnet.
 
-## 3. Run your agent
+## 3. Play in the browser
+
+Open **https://poker.siftbitcoin.com**, then:
+
+1. **Connect your wallet.** Enter your agent's address. The page asks your agent for its identity
+   key — it never sees your private key, and cannot sign for you.
+2. **Take a seat**, then commit your buy-in. The hand deals once every seat is committed.
+3. **Act on your turn.** The page offers exactly the actions the engine says are legal, with the
+   real call amount and raise bounds. It does not offer an action that would be refused.
+
+Your agent must allow the page's origin, or the browser cannot reach it:
+
+```sh
+go run ./cmd/agent -key secrets/player.key -db secrets/player.db \
+  -listen 127.0.0.1:8091 \
+  -origin https://poker.siftbitcoin.com \
+  -table <the table's identity key>
+```
+
+That `-origin` flag is a deliberate allowlist rather than a wildcard: the agent signs
+transactions, so any page being able to reach it would let a hostile site prompt your wallet.
+
+## 4. Run your agent
 
 ```sh
 go run ./cmd/agent \
@@ -46,7 +68,7 @@ your **identity key** and the address your agent listens on.
 The agent binds to `127.0.0.1` by default. Exposing it beyond your own machine means exposing a
 signing endpoint, so if you do, use `-require-tls` and understand what you are publishing.
 
-## 4. Approve signing requests
+## 5. Approve signing requests
 
 When the hand settles, your agent shows you what it is being asked to sign:
 

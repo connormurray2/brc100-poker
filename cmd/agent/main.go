@@ -8,6 +8,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -43,6 +44,7 @@ func run() error {
 	table := flag.String("table", "", "identity key of the table service to authorise")
 	autoApprove := flag.Bool("auto-approve", false, "approve every signing request without asking (development only)")
 	requireTLS := flag.Bool("require-tls", false, "refuse substrate calls over plaintext")
+	origins := flag.String("origin", "", "comma-separated web origins allowed to call this agent from a browser")
 	logLevel := flag.String("log-level", "info", "debug, info, warn or error")
 	flag.Parse()
 
@@ -94,13 +96,21 @@ func run() error {
 		approver = substrate.ApproverFunc(func(substrate.SigningRequest) error { return nil })
 	}
 
+	var allowed []string
+	for _, o := range strings.Split(*origins, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			allowed = append(allowed, o)
+		}
+	}
+
 	a, err := agent.New(agent.Config{
-		PrivateKeyHex: keyHex,
-		Wallet:        w,
-		Approver:      approver,
-		RequireTLS:    *requireTLS,
-		Originator:    *originator,
-		Logger:        logger,
+		PrivateKeyHex:  keyHex,
+		Wallet:         w,
+		Approver:       approver,
+		RequireTLS:     *requireTLS,
+		Originator:     *originator,
+		AllowedOrigins: allowed,
+		Logger:         logger,
 	})
 	if err != nil {
 		return err
@@ -137,6 +147,10 @@ func run() error {
 	mux := http.NewServeMux()
 	mux.Handle("/", a.Server())
 	mux.HandleFunc("/livez", reporter.LivenessHandler())
+	// /identity lets a browser client discover which player this agent speaks for, and doubles
+	// as the connection test. It returns only public values: the identity key and the audience
+	// a caller must address requests to.
+	mux.HandleFunc("/identity", identityHandler(a, allowed))
 
 	srv := &http.Server{
 		Addr:              *listen,
@@ -164,6 +178,41 @@ func run() error {
 		return fmt.Errorf("shutting down: %w", err)
 	}
 	return nil
+}
+
+// identityHandler serves the agent's public identity to a browser client.
+//
+// Deliberately unauthenticated: everything it returns is public, and a client needs it before it
+// can authenticate anything. It is still origin-checked, so an unlisted page cannot discover which
+// wallet is running here.
+func identityHandler(a *agent.Agent, allowed []string) http.HandlerFunc {
+	permitted := make(map[string]struct{}, len(allowed))
+	for _, o := range allowed {
+		permitted[strings.ToLower(o)] = struct{}{}
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if _, ok := permitted[strings.ToLower(origin)]; !ok {
+				http.Error(w, "origin not allowed", http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Headers", "content-type")
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"identityKey": a.Identity(),
+			"audience":    a.Server().Audience(),
+		})
+	}
 }
 
 // interactiveApprover asks the player on the terminal.

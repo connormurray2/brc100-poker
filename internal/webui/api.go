@@ -79,6 +79,8 @@ type Store struct {
 	tables map[string]*TableView
 	// hole holds each seat's cards per table, released to that seat only.
 	hole map[string]map[int][]string
+	// live is the playable table, if one exists.
+	live *LiveTable
 	now  func() time.Time
 }
 
@@ -216,6 +218,20 @@ func truncateKey(k string) string {
 	return k[:n]
 }
 
+// SetLive attaches the playable table the action endpoints drive.
+func (s *Store) SetLive(l *LiveTable) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.live = l
+}
+
+// Live returns the playable table, or nil.
+func (s *Store) Live() *LiveTable {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.live
+}
+
 // Handler serves the UI and its API.
 func (s *Store) Handler(identityKey, version, network string) http.Handler {
 	mux := http.NewServeMux()
@@ -262,6 +278,94 @@ func (s *Store) Handler(identityKey, version, network string) http.Handler {
 			return
 		}
 		writeJSON(w, http.StatusOK, view)
+	})
+
+	// ---- playable endpoints ----------------------------------------------
+	//
+	// Each takes an identity key and resolves it to a seat server-side. A client never states
+	// its own seat number, so it cannot act for another player by claiming one.
+
+	mux.HandleFunc("/api/join", func(w http.ResponseWriter, r *http.Request) {
+		live := s.Live()
+		if live == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no playable table"})
+			return
+		}
+		var req struct {
+			IdentityKey string `json:"identityKey"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body is not valid JSON"})
+			return
+		}
+		seat, err := live.Join(req.IdentityKey)
+		if err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"seat": seat})
+	})
+
+	mux.HandleFunc("/api/ready", func(w http.ResponseWriter, r *http.Request) {
+		live := s.Live()
+		if live == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no playable table"})
+			return
+		}
+		var req struct {
+			IdentityKey string `json:"identityKey"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body is not valid JSON"})
+			return
+		}
+		if err := live.Ready(req.IdentityKey); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	})
+
+	mux.HandleFunc("/api/act", func(w http.ResponseWriter, r *http.Request) {
+		live := s.Live()
+		if live == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no playable table"})
+			return
+		}
+		var req struct {
+			IdentityKey string `json:"identityKey"`
+			Action      string `json:"action"`
+			To          int64  `json:"to"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body is not valid JSON"})
+			return
+		}
+		if err := live.Act(req.IdentityKey, req.Action, req.To); err != nil {
+			// The engine is the adjudicator, and its refusal already says why.
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	})
+
+	// /api/live is the single poll a playing client makes: the table as that seat sees it,
+	// plus exactly the actions it may take. One call rather than two so the view and the
+	// legal actions cannot disagree.
+	mux.HandleFunc("/api/live", func(w http.ResponseWriter, r *http.Request) {
+		live := s.Live()
+		if live == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no playable table"})
+			return
+		}
+		key := r.URL.Query().Get("identityKey")
+		seat := live.SeatOf(key)
+		writeJSON(w, http.StatusOK, map[string]any{
+			"seat":    seat,
+			"table":   live.View(seat),
+			"legal":   live.LegalFor(seat),
+			"winners": live.Winners(),
+		})
 	})
 
 	return mux

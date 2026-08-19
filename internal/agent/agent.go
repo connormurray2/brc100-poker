@@ -81,6 +81,8 @@ type Config struct {
 	RequireTLS bool
 	// Originator is the FQDN-shaped identifier BRC-100 requires.
 	Originator string
+	// AllowedOrigins are the web origins permitted to call this agent from a browser.
+	AllowedOrigins []string
 
 	Logger *slog.Logger
 }
@@ -125,10 +127,11 @@ func New(cfg Config) (*Agent, error) {
 	}
 
 	srv, err := substrate.NewServer(substrate.Config{
-		Wallet:     priv,
-		Approver:   cfg.Approver,
-		RequireTLS: cfg.RequireTLS,
-		Logger:     logger,
+		Wallet:         priv,
+		Approver:       cfg.Approver,
+		RequireTLS:     cfg.RequireTLS,
+		AllowedOrigins: cfg.AllowedOrigins,
+		Logger:         logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("agent: building the substrate server: %w", err)

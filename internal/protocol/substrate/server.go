@@ -80,6 +80,7 @@ type Server struct {
 	limiter    *rateLimiter
 	approver   Approver
 	requireTLS bool
+	origins    map[string]struct{}
 
 	mu       sync.RWMutex
 	grants   map[string]Grants
@@ -97,6 +98,13 @@ type Config struct {
 	RequireTLS bool
 	// RequestsPerMinute bounds one caller's rate. Zero applies a default.
 	RequestsPerMinute int
+	// AllowedOrigins are the web origins permitted to call this substrate from a browser.
+	//
+	// Required for a browser client, and deliberately an explicit list rather than "*":
+	// this endpoint signs transactions, so any page being able to reach it would let a
+	// hostile site enumerate and prompt a player's wallet. Authentication still applies —
+	// CORS only decides which pages may ask.
+	AllowedOrigins []string
 
 	Logger *slog.Logger
 }
@@ -120,8 +128,14 @@ func NewServer(cfg Config) (*Server, error) {
 		rpm = 120
 	}
 
+	origins := make(map[string]struct{}, len(cfg.AllowedOrigins))
+	for _, o := range cfg.AllowedOrigins {
+		origins[strings.ToLower(strings.TrimSpace(o))] = struct{}{}
+	}
+
 	return &Server{
 		logger:     logger,
+		origins:    origins,
 		wallet:     cfg.Wallet,
 		audience:   cfg.Wallet.PubKey().ToDERHex(),
 		nonces:     NewNonceCache(),
@@ -176,6 +190,29 @@ func (s *Server) Approve(req SigningRequest) error { return s.approver.Approve(r
 
 // ServeHTTP serves one substrate call.
 func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// CORS, so a browser client can reach a player's own agent. Only origins the player
+	// explicitly allowed are echoed back: this endpoint signs transactions, and a wildcard
+	// would let any page prompt the wallet.
+	origin := strings.ToLower(r.Header.Get("Origin"))
+	if origin != "" {
+		if _, ok := s.origins[origin]; ok {
+			w.Header().Set("Access-Control-Allow-Origin", r.Header.Get("Origin"))
+			w.Header().Set("Vary", "Origin")
+			w.Header().Set("Access-Control-Allow-Headers", "content-type")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.Header().Set("Access-Control-Max-Age", "600")
+		} else {
+			// An unlisted origin is refused before any wallet work happens.
+			s.logger.Debug("refusing a request from an unlisted origin", "origin", origin)
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return
+		}
+	}
+	if r.Method == http.MethodOptions {
+		// A preflight carries no request to authenticate; the headers above are the answer.
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if r.Method != http.MethodPost {
 		s.fail(w, "", &Error{Code: CodeBadRequest, Message: "only POST is served"}, http.StatusMethodNotAllowed)
 		return
