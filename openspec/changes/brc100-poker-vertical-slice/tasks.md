@@ -59,11 +59,11 @@
 - [x] 6.3 Port the hand evaluator, including wheel straights, kickers, and the exactly-two-hole-cards constraint; fix the pre-river board bug rather than reproducing it
 - [x] 6.4 Port the exhaustive evaluator test across all 2,598,960 distinct five-card hands, asserting zero category and ordering errors
 - [x] 6.5 Port the secp256k1 primitives the game protocol needs — point multiply, scalar inverse and arithmetic, card base points, point validation — and omit the wallet-superseded key generation, signing, and DER encoding
-- [ ] 6.6 Port the commutative-encryption deck: public card encodings, mask application and stripping, and fail-closed validation of hostile input
+- [x] 6.6 Port the commutative-encryption deck: public card encodings, mask application and stripping, and fail-closed validation of hostile input
 - [x] 6.7 Add tests proving masks commute, strip in any order, and that a partially unmasked card matches no public card
-- [ ] 6.8 Port the shuffle protocol with per-player permutation and masking, and the re-mask step giving each position independent per-player secrets
-- [ ] 6.9 Port the private hole-card deal and prove by test that colluding opponents pooling every other secret still cannot read a hole card
-- [ ] 6.10 Port the public board deal and the verifiable showdown reveal
+- [x] 6.8 Port the shuffle protocol with per-player permutation and masking, and the re-mask step giving each position independent per-player secrets
+- [x] 6.9 Port the private hole-card deal and prove by test that colluding opponents pooling every other secret still cannot read a hole card
+- [x] 6.10 Port the public board deal and the verifiable showdown reveal
 - [ ] 6.11 Port the reveal-commitment proof, including the hostile test that derives a forged scalar and asserts the commitment rejects it
 - [ ] 6.12 Port commit-reveal seat ordering
 - [ ] 6.13 Wire the shuffle proof into live play so a malicious shuffler is constrained during the hand, not merely audited afterwards

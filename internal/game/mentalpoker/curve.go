@@ -233,3 +233,15 @@ func (p Point) Equal(q Point) bool {
 	}
 	return p.x.Cmp(q.x) == 0 && p.y.Cmp(q.y) == 0
 }
+
+// randIndex returns a uniform value in [0,n) from a cryptographically secure source.
+func randIndex(n int) (int, error) {
+	if n <= 0 {
+		return 0, fmt.Errorf("mentalpoker: randIndex bound must be positive, got %d", n)
+	}
+	v, err := rand.Int(rand.Reader, big.NewInt(int64(n)))
+	if err != nil {
+		return 0, fmt.Errorf("mentalpoker: reading random source: %w", err)
+	}
+	return int(v.Int64()), nil
+}
