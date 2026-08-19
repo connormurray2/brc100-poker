@@ -42,8 +42,8 @@
 - [x] 4.6 Implement explicit signing consent: present amounts, destinations, and committed outputs, and sign only on approval for that specific request
 - [x] 4.7 Ensure an approval authorises exactly one signature and cannot be replayed for a second
 - [x] 4.8 Add per-caller rate limiting and a maximum request body size
-- [ ] 4.9 Write tests proving results match the in-process wallet for every exposed method
-- [ ] 4.10 Confirm by test that no private key material appears in any request, response, or log line
+- [x] 4.9 Write tests proving results match the in-process wallet for every exposed method
+- [x] 4.10 Confirm by test that no private key material appears in any request, response, or log line
 
 ## 5. Player agent
 
@@ -100,7 +100,7 @@
 - [x] 8.10 Implement signature collection, ordered assembly, rejection of invalid signatures with attribution, and refusal to broadcast an incomplete set
 - [x] 8.11 Prove by test that output order and change presence cannot change after signing, and that modifying a signed field invalidates collected signatures
 - [x] 8.12 Implement non-cooperation handling: bounded outcome, attribution, and a preserved recovery path for every other seat
-- [ ] 8.13 Prove by test that a settlement and its hand's refunds cannot both succeed
+- [x] 8.13 Prove by test that a settlement and its hand's refunds cannot both succeed
 - [x] 8.14 Implement crash recovery that determines from the ledger whether a transaction was broadcast, without double-spending or abandoning the pot
 - [ ] 8.15 Implement player-visible money state for commitment, settlement, and a stalled hand including refund availability
 - [x] 8.16 Play a complete hand for real value on Teratestnet between independent wallets: buy-in, deal, betting, showdown, settlement, and payout
