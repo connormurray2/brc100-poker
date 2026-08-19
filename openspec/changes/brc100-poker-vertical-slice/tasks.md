@@ -124,7 +124,7 @@
 
 ## 10. Close-out
 
-- [ ] 10.1 Resolve the deferred parameters and record them: refund locktime duration, whether the table underwrites pot fees or seats pay their own share, and the buy-in and blind sizes
-- [ ] 10.2 Document the substrate protocol well enough for a browser wallet to implement it as a second client
-- [ ] 10.3 Record the deferred scope — the other variants, group blackjack, chat, card NFTs, hand tape, replay — and what each would require
-- [ ] 10.4 Write the operational runbook: startup, health interpretation, dependency outage, stalled hand, and restore
+- [x] 10.1 Resolve the deferred parameters and record them: refund locktime duration, whether the table underwrites pot fees or seats pay their own share, and the buy-in and blind sizes
+- [x] 10.2 Document the substrate protocol well enough for a browser wallet to implement it as a second client
+- [x] 10.3 Record the deferred scope — the other variants, group blackjack, chat, card NFTs, hand tape, replay — and what each would require
+- [x] 10.4 Write the operational runbook: startup, health interpretation, dependency outage, stalled hand, and restore
