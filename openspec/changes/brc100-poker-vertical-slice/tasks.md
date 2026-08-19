@@ -34,11 +34,11 @@
 
 ## 4. BRC-100 substrate
 
-- [ ] 4.1 Define the wire protocol: request and response envelopes, method naming, and structured error shape
-- [ ] 4.2 Implement mutual authentication where both parties prove identity-key control over a challenge binding the request, a nonce, and a timestamp
-- [ ] 4.3 Reject asserted identity, replayed requests, and tampered requests; add tests for each
+- [x] 4.1 Define the wire protocol: request and response envelopes, method naming, and structured error shape
+- [x] 4.2 Implement mutual authentication where both parties prove identity-key control over a challenge binding the request, a nonce, and a timestamp
+- [x] 4.3 Reject asserted identity, replayed requests, and tampered requests; add tests for each
 - [ ] 4.4 Require transport protection outside local development and refuse to start without it
-- [ ] 4.5 Implement per-identity least-privilege method grants, and verify a table identity cannot enumerate a player's outputs or actions
+- [x] 4.5 Implement per-identity least-privilege method grants, and verify a table identity cannot enumerate a player's outputs or actions
 - [ ] 4.6 Implement explicit signing consent: present amounts, destinations, and committed outputs, and sign only on approval for that specific request
 - [ ] 4.7 Ensure an approval authorises exactly one signature and cannot be replayed for a second
 - [ ] 4.8 Add per-caller rate limiting and a maximum request body size
