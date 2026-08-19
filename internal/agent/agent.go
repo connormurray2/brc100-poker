@@ -66,6 +66,9 @@ type Agent struct {
 	mu sync.RWMutex
 	// stakes is the agent's own record, keyed by hand id.
 	stakes map[string]*Stake
+	// deals holds this seat's mental-poker secrets. They never leave the process: that is
+	// what makes the deal dealerless rather than merely private from other players.
+	deals *dealStore
 }
 
 // Config parameterises an Agent.
@@ -145,6 +148,7 @@ func New(cfg Config) (*Agent, error) {
 		originator: cfg.Originator,
 		server:     srv,
 		stakes:     make(map[string]*Stake),
+		deals:      newDealStore(),
 	}
 
 	if err := a.registerHandlers(); err != nil {
@@ -229,7 +233,27 @@ func (a *Agent) registerHandlers() error {
 	if err := a.server.HandleMethod(substrate.MethodSignPot, a.handleSignPot); err != nil {
 		return err
 	}
-	return a.server.HandleMethod(substrate.MethodInternalizeAction, a.handleInternalize)
+	if err := a.server.HandleMethod(substrate.MethodInternalizeAction, a.handleInternalize); err != nil {
+		return err
+	}
+	// The deal methods. The table sequences the chain by calling these in turn; the secrets
+	// behind them never leave this process.
+	if err := a.server.HandleMethod(substrate.MethodDealCommit, a.handleDealCommit); err != nil {
+		return err
+	}
+	if err := a.server.HandleMethod(substrate.MethodDealShuffle, a.handleDealShuffle); err != nil {
+		return err
+	}
+	if err := a.server.HandleMethod(substrate.MethodDealRemask, a.handleDealRemask); err != nil {
+		return err
+	}
+	if err := a.server.HandleMethod(substrate.MethodDealReveal, a.handleDealReveal); err != nil {
+		return err
+	}
+	if err := a.server.HandleMethod(substrate.MethodDealFinal, a.handleDealFinal); err != nil {
+		return err
+	}
+	return a.server.HandleMethod(substrate.MethodDealCard, a.handleDealCard)
 }
 
 func (a *Agent) handleGetPublicKey(_ *ec.PublicKey, _ json.RawMessage) (any, error) {

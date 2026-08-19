@@ -49,6 +49,23 @@ const (
 	MethodListOutputs Method = "listOutputs"
 	// MethodListActions enumerates a wallet's transaction history. Also sensitive.
 	MethodListActions Method = "listActions"
+	// MethodDealCommit publishes a seat's shuffle and remask commitments, binding it to the
+	// transformation it will apply before the deal begins.
+	MethodDealCommit Method = "dealCommit"
+	// MethodDealShuffle applies a seat's committed shuffle to a deck.
+	MethodDealShuffle Method = "dealShuffle"
+	// MethodDealRemask applies a seat's committed remask.
+	MethodDealRemask Method = "dealRemask"
+	// MethodDealReveal discloses a seat's per-position scalars for named positions. This is
+	// the method that deals a card, and the reason the deal is dealerless: the scalars never
+	// leave the agent, so nothing else can read a card the seat was not given.
+	MethodDealReveal Method = "dealReveal"
+	// MethodDealFinal records the completed deck with a seat, since an agent only sees the
+	// deck as it was when its own pass ran and reading a card needs the final one.
+	MethodDealFinal Method = "dealFinal"
+	// MethodDealCard asks a seat's own agent to identify a card it can read.
+	MethodDealCard Method = "dealCard"
+
 	// MethodSignPot signs one input of a pot transaction. Not a BRC-100 method: it is
 	// this application's co-signing primitive, and it is the only method that produces a
 	// signature over money the caller proposed.
@@ -59,7 +76,9 @@ const (
 func (m Method) Known() bool {
 	switch m {
 	case MethodGetPublicKey, MethodGetNetwork, MethodCreateAction, MethodSignAction,
-		MethodInternalizeAction, MethodListOutputs, MethodListActions, MethodSignPot:
+		MethodInternalizeAction, MethodListOutputs, MethodListActions, MethodSignPot,
+		MethodDealCommit, MethodDealShuffle, MethodDealRemask, MethodDealReveal,
+		MethodDealFinal, MethodDealCard:
 		return true
 	default:
 		return false
@@ -267,7 +286,12 @@ func (g Grants) Methods() []Method {
 // It can ask for the seat's identity, propose a signature, and hand over a received payment.
 // It cannot enumerate outputs or history, and it cannot make the wallet spend on its own.
 func TableGrants() Grants {
-	g, err := NewGrants(MethodGetPublicKey, MethodGetNetwork, MethodSignPot, MethodInternalizeAction)
+	// The deal methods are granted because the table drives the chain: it asks each seat in
+	// turn to apply its pass. The secrets themselves never leave the agent, so granting these
+	// lets the table sequence a deal without ever being able to read a card.
+	g, err := NewGrants(MethodGetPublicKey, MethodGetNetwork, MethodSignPot, MethodInternalizeAction,
+		MethodDealCommit, MethodDealShuffle, MethodDealRemask, MethodDealReveal,
+		MethodDealFinal, MethodDealCard)
 	if err != nil {
 		// The method list is a compile-time constant, so this cannot fail.
 		panic(err)
@@ -278,7 +302,9 @@ func TableGrants() Grants {
 // OwnerGrants is what a player's own client may do to their wallet: everything served.
 func OwnerGrants() Grants {
 	g, err := NewGrants(MethodGetPublicKey, MethodGetNetwork, MethodCreateAction,
-		MethodSignAction, MethodInternalizeAction, MethodListOutputs, MethodListActions, MethodSignPot)
+		MethodSignAction, MethodInternalizeAction, MethodListOutputs, MethodListActions, MethodSignPot,
+		MethodDealCommit, MethodDealShuffle, MethodDealRemask, MethodDealReveal,
+		MethodDealFinal, MethodDealCard)
 	if err != nil {
 		panic(err)
 	}
