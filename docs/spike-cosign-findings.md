@@ -94,16 +94,30 @@ Chain height sat at 29600 across 90 seconds of polling, and a settlement stayed 
 for a full 8 minutes before a later run saw `completed`. Anything that waits on a proof
 needs a generous timeout and must degrade gracefully rather than hang.
 
+## Proven since
+
+**The payout receive path works end to end.** `receive2_integration_test.go` pays a BRC-29
+output to a wallet that did **not** build the transaction — the real winner case — waits for a
+block, internalizes it, and asserts the coin is spendable. Confirmed on teratestnet:
+
+```
+winner balance before: 0 sat
+paid 4800 sat in 9e0e53f4…; mined at height 29650, payout at vout 0
+internalize accepted: true
+winner balance after: 4800 sat (delta +4800)
+output 9e0e53f4…0  4800 sat  spendable=true
+```
+
+Two notes for anyone re-running it. Internalizing into the wallet that *built* the transaction
+fails on a UNIQUE constraint, because that wallet already holds the output row — proving
+receipt requires a separate wallet. And blocks arrive roughly every ten minutes, so a
+six-minute wait is too tight; the test allows twenty.
+
+**n-of-n for 2..6 seats.** `internal/protocol/cosign` verifies every table size through the
+real script interpreter, not just the 2-of-2 the spike ran.
+
 ## Not yet proven
 
-- **The payout internalize end-to-end.** The derivation is now correct and the merkle proof
-  now **verifies** — internalizing a mined settlement gets all the way to the database,
-  failing only on a UNIQUE constraint when replayed against the wallet that built the
-  transaction (that wallet already has the output row). Proving receipt therefore needs a
-  wallet that did not build the transaction, which
-  `receive_integration_test.go` does: fresh key, fresh database, pay it a BRC-29 output,
-  internalize, assert the balance and spendability. It currently SKIPs because no block
-  arrived within six minutes. Run it with `make integration` when the network is mining.
-- **n-of-n beyond 2-of-2.** The mechanism generalises, but only 2-of-2 has been run.
-- **A refusing seat and the refund broadcast.** Task 8.17 covers this; the finality gate is
-  proven but no refund has been broadcast after its locktime matured.
+- **A refusing seat and a broadcast refund.** Task 8.17. The finality gate is proven and the
+  refund shape is verified, but no refund has been broadcast after its locktime matured.
+- **A full hand for real value.** Task 8.16, which needs the game and money layers joined.

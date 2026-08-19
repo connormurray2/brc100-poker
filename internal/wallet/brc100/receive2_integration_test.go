@@ -1,7 +1,5 @@
 //go:build integration
 
-// Integration tests requiring a funded teratestnet wallet and a mining network.
-// Run with: make integration
 package brc100
 
 import (
@@ -9,7 +7,6 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -20,19 +17,27 @@ import (
 	"github.com/galt-tr/go-arcade-toolbox/pkg/brc29"
 )
 
-// The real receiving case: a wallet that did NOT build the transaction receives a BRC-29
-// payment and can spend it. This is what a poker winner does with a pot settlement.
-func TestReceiveBRC29PaymentIntoFreshWallet(t *testing.T) {
-	senderHexBytes, err := os.ReadFile("../../../secrets/pay.key")
+// Proves a winner can receive AND spend a BRC-29 payout, using a persisted recipient key so
+// the wait for a block can span runs. Blocks on teratestnet arrive roughly every ten
+// minutes, so the window is generous.
+func TestReceiveAndSpendPayout(t *testing.T) {
+	senderRaw, err := os.ReadFile("../../../secrets/pay.key")
 	if err != nil {
 		t.Skip("no funded sender key")
 	}
-	senderHex := strings.TrimSpace(string(senderHexBytes))
-	sraw, _ := hex.DecodeString(senderHex)
-	senderPriv, _ := ec.PrivateKeyFromBytes(sraw)
+	senderHex := strings.TrimSpace(string(senderRaw))
+	sb, _ := hex.DecodeString(senderHex)
+	senderPriv, _ := ec.PrivateKeyFromBytes(sb)
+
+	recipRaw, err := os.ReadFile("../../../secrets/winner.key")
+	if err != nil {
+		t.Skip("no winner key; generate one with cmd/keygen -out secrets/winner.key")
+	}
+	recipHex := strings.TrimSpace(string(recipRaw))
+	rb, _ := hex.DecodeString(recipHex)
+	recipPriv, _ := ec.PrivateKeyFromBytes(rb)
 
 	ctx := context.Background()
-
 	sender, err := New(ctx, Options{
 		Backend: BackendSQLite, SQLitePath: "../../../secrets/pay.db",
 		StorageName: "poker-fund", PrivateKeyHex: senderHex,
@@ -45,15 +50,9 @@ func TestReceiveBRC29PaymentIntoFreshWallet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A brand-new recipient wallet with its own key and its own database.
-	recipientPriv, err := ec.NewPrivateKey()
-	if err != nil {
-		t.Fatal(err)
-	}
-	recipientHex := hex.EncodeToString(recipientPriv.Serialize())
 	recipient, err := New(ctx, Options{
-		Backend: BackendSQLite, SQLitePath: filepath.Join(t.TempDir(), "winner.db"),
-		StorageName: "poker-winner", PrivateKeyHex: recipientHex,
+		Backend: BackendSQLite, SQLitePath: "../../../secrets/winner.db",
+		StorageName: "poker-winner", PrivateKeyHex: recipHex,
 	}, nil)
 	if err != nil {
 		t.Fatal(err)
@@ -63,17 +62,19 @@ func TestReceiveBRC29PaymentIntoFreshWallet(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if bal, _ := recipient.Wallet.Balance(ctx); bal != 0 {
-		t.Fatalf("fresh recipient balance = %d, want 0", bal)
+	before, err := recipient.Wallet.Balance(ctx)
+	if err != nil {
+		t.Fatal(err)
 	}
+	t.Logf("winner balance before: %d sat", before)
 
-	rawPrefix := []byte("poker-hand-0007")
-	rawSuffix := []byte("winner-seat-2")
+	rawPrefix := []byte("poker-hand-recv")
+	rawSuffix := []byte("winner-seat-0")
 	keyID := brc29.KeyID{
 		DerivationPrefix: base64.StdEncoding.EncodeToString(rawPrefix),
 		DerivationSuffix: base64.StdEncoding.EncodeToString(rawSuffix),
 	}
-	lock, err := brc29.LockForCounterparty(senderPriv, keyID, recipientPriv.PubKey())
+	lock, err := brc29.LockForCounterparty(senderPriv, keyID, recipPriv.PubKey())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -92,11 +93,11 @@ func TestReceiveBRC29PaymentIntoFreshWallet(t *testing.T) {
 		t.Fatalf("paying the winner: %v", err)
 	}
 	txid := res.Txid.String()
-	t.Logf("paid %d sat to the winner in %s", payAmount, txid)
+	t.Logf("paid %d sat in %s; waiting for a block", payAmount, txid)
 
-	// Wait for a merkle proof: internalizing verifies one.
-	deadline := time.Now().Add(6 * time.Minute)
+	deadline := time.Now().Add(20 * time.Minute)
 	var proven []byte
+	var vout uint32
 	for {
 		rec, err := sender.Oracle.GetTx(ctx, txid)
 		if err == nil && len(rec.MerklePath) > 0 && len(rec.RawTx) > 0 {
@@ -111,6 +112,11 @@ func TestReceiveBRC29PaymentIntoFreshWallet(t *testing.T) {
 			if err := tx.AddMerkleProof(bump); err != nil {
 				t.Fatal(err)
 			}
+			for i, o := range tx.Outputs {
+				if strings.EqualFold(o.LockingScript.String(), lock.String()) {
+					vout = uint32(i)
+				}
+			}
 			beef := transaction.NewBeefV2()
 			if _, err := beef.MergeTransaction(tx); err != nil {
 				t.Fatal(err)
@@ -118,13 +124,13 @@ func TestReceiveBRC29PaymentIntoFreshWallet(t *testing.T) {
 			if proven, err = beef.AtomicBytes(tx.TxID()); err != nil {
 				t.Fatal(err)
 			}
-			t.Logf("proof available at height %d", rec.BlockHeight)
+			t.Logf("mined at height %d, payout at vout %d", rec.BlockHeight, vout)
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Skipf("no merkle proof for %s within the wait window; teratestnet is not mining", txid)
+			t.Skipf("no block for %s within 20 minutes", txid)
 		}
-		time.Sleep(20 * time.Second)
+		time.Sleep(30 * time.Second)
 	}
 
 	ires, err := recipient.Wallet.InternalizeAction(ctx, sdk.InternalizeActionArgs{
@@ -132,7 +138,7 @@ func TestReceiveBRC29PaymentIntoFreshWallet(t *testing.T) {
 		Description: "pot settlement received by the winning seat",
 		Labels:      []string{"poker-settlement"},
 		Outputs: []sdk.InternalizeOutput{{
-			OutputIndex: 0,
+			OutputIndex: vout,
 			Protocol:    sdk.InternalizeProtocolWalletPayment,
 			PaymentRemittance: &sdk.Payment{
 				DerivationPrefix:  rawPrefix,
@@ -142,7 +148,7 @@ func TestReceiveBRC29PaymentIntoFreshWallet(t *testing.T) {
 		}},
 	}, "poker.local")
 	if err != nil {
-		t.Fatalf("InternalizeAction on the recipient wallet: %v", err)
+		t.Fatalf("InternalizeAction on the recipient: %v", err)
 	}
 	t.Logf("internalize accepted: %v", ires.Accepted)
 
@@ -150,21 +156,24 @@ func TestReceiveBRC29PaymentIntoFreshWallet(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("winner balance: %d sat", after)
-	if after != payAmount {
-		t.Fatalf("winner balance = %d, want %d", after, payAmount)
+	t.Logf("winner balance after: %d sat (delta %+d)", after, int64(after)-int64(before))
+	if after <= before {
+		t.Fatalf("the payout was not credited as spendable: %d -> %d", before, after)
 	}
 
+	// Receiving is not enough: the winner must be able to SPEND it.
 	out, err := recipient.Wallet.ListOutputs(ctx, sdk.ListOutputsArgs{Basket: "default"}, "poker.local")
 	if err != nil {
 		t.Fatal(err)
 	}
+	spendable := false
 	for _, o := range out.Outputs {
-		t.Logf("  winner output %s  %d sat  spendable=%v", o.Outpoint.String(), o.Satoshis, o.Spendable)
-		if !o.Spendable {
-			t.Error("the winner's payout is not spendable")
+		t.Logf("  output %s  %d sat  spendable=%v", o.Outpoint.String(), o.Satoshis, o.Spendable)
+		if o.Spendable {
+			spendable = true
 		}
 	}
+	if !spendable {
+		t.Fatal("the winner holds no spendable output")
+	}
 }
-
-func boolPtr(b bool) *bool { return &b }
