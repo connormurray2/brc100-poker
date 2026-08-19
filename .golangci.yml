@@ -1,0 +1,33 @@
+version: "2"
+
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - bodyclose
+    - errorlint
+    - gosec
+    - misspell
+    - nilerr
+    - rowserrcheck
+    - unconvert
+
+  settings:
+    gosec:
+      excludes:
+        # G115 fires on integer conversions that are checked at the call site.
+        - G115
+    errcheck:
+      check-type-assertions: true
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0

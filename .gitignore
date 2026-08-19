@@ -1,0 +1,15 @@
+# Wallet databases. These ARE the wallet: no UTXO discovery, no restore-from-seed.
+# Never commit one, and never treat a committed copy as a backup.
+*.db
+*.db-shm
+*.db-wal
+
+# Secrets: keys and credentials are supplied at runtime, never built into an image.
+*.env
+.env*
+!.env.example
+secrets/
+
+# Build output
+/dist/
+/bin/
