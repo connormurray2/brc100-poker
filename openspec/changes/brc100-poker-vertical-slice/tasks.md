@@ -73,7 +73,7 @@
 
 ## 7. Table coordination
 
-- [ ] 7.1 Port the transport interface unchanged, and implement it over WebSocket
+- [x] 7.1 Port the transport interface unchanged, and implement it over WebSocket
 - [x] 7.2 Implement sender-inclusive fan-out, since the seating handshake depends on a publish echoing back to its own sender
 - [x] 7.3 Implement message de-duplication by id so a redelivered message is applied exactly once
 - [ ] 7.4 Replace the old periodic re-broadcast loop with explicit acknowledgement and targeted catch-up on reconnect
@@ -84,7 +84,7 @@
 - [ ] 7.9 Implement deal and reveal timeouts that attribute the stall to the responsible seat
 - [ ] 7.10 Implement reconnect and resynchronisation without re-sending another seat's private material
 - [ ] 7.11 Run a full multi-seat hand with no money over the real transport
-- [ ] 7.12 Delete the old subnet-sweeping peer discovery and the desktop profile model rather than porting either
+- [x] 7.12 Delete the old subnet-sweeping peer discovery and the desktop profile model rather than porting either
 
 ## 8. Pot, co-signing, and settlement
 
