@@ -112,8 +112,8 @@
 - [x] 9.2 Implement configuration validation that refuses to start on missing settings or an unsafe production configuration, and logs the effective configuration without secrets
 - [x] 9.3 Supply secrets at runtime and add a test asserting no key or credential appears in logs or errors
 - [x] 9.4 Assert by test that the table service holds no player private key
-- [ ] 9.5 Provision the Digital Ocean droplet in nyc1 and managed Postgres, keeping unauthenticated interfaces off the public network
-- [ ] 9.6 Configure automated database backups and surface backup failure
+- [x] 9.5 Provision the Digital Ocean droplet in nyc1 and managed Postgres, keeping unauthenticated interfaces off the public network
+- [x] 9.6 Configure automated database backups and surface backup failure
 - [ ] 9.7 Perform and document a restore drill proving a restored backup yields a working wallet, and gate real-value play on it
 - [x] 9.8 Implement liveness and readiness checks, with readiness reflecting database and status-tracking availability
 - [x] 9.9 Implement chain-service health reporting, refusing to start a new real-value hand when the oracle is unreachable and informing players when it fails mid-hand
