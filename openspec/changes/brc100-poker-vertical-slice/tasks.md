@@ -28,7 +28,7 @@
 - [x] 3.5 Disable output randomisation, pin the change output, and confirm signatures stay valid across repeated runs
 - [x] 3.6 Keep the shared output in a basket separate from fee-paying coins and confirm it is never selected to pay a fee
 - [x] 3.7 Over-declare the unlocking script length and confirm the fee is accepted
-- [ ] 3.8 Verify scripts locally before broadcast, then broadcast and confirm the transaction settles on Teratestnet
+- [x] 3.8 Verify scripts locally before broadcast, then broadcast and confirm the transaction settles on Teratestnet
 - [x] 3.9 Build a pre-signed nLockTime refund with a non-final sequence, gate finality client-side, and confirm it is refused before its locktime and accepted after
 - [x] 3.10 Record the findings and confirm the design holds; if the spike fails, stop and revisit the approach before proceeding
 
@@ -104,7 +104,7 @@
 - [ ] 8.14 Implement crash recovery that determines from the ledger whether a transaction was broadcast, without double-spending or abandoning the pot
 - [ ] 8.15 Implement player-visible money state for commitment, settlement, and a stalled hand including refund availability
 - [ ] 8.16 Play a complete hand for real value on Teratestnet between independent wallets: buy-in, deal, betting, showdown, settlement, and payout
-- [ ] 8.17 Test the stall path for real: fund a pot, have a seat refuse to sign, and confirm every other seat recovers its stake via refund
+- [x] 8.17 Test the stall path for real: fund a pot, have a seat refuse to sign, and confirm every other seat recovers its stake via refund
 
 ## 9. Deployment
 

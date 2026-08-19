@@ -116,8 +116,23 @@ six-minute wait is too tight; the test allows twenty.
 **n-of-n for 2..6 seats.** `internal/protocol/cosign` verifies every table size through the
 real script interpreter, not just the 2-of-2 the spike ran.
 
+**The refund recovery path works on-chain.** `refund_integration_test.go` funds a pot, lets the
+hand stall with no settlement, and recovers the stake with the pre-signed nLockTime refund:
+
+```
+pot funded: 1cbba739…:0 for 5000 sat
+refund co-signed and verified locally against the pot script
+locktime matured at height 29655
+refund accepted for broadcast: status=RECEIVED
+refund mined at height 29656 — the stalled stake is recovered
+```
+
+One encoding trap worth recording: `Oracle.Broadcast` takes the **binary Extended Format**
+blob from `tx.EF()`, not hex and not plain raw bytes. Passing hex-as-bytes is rejected with
+`failed to parse transaction`, which reads like a malformed transaction rather than a
+malformed encoding. EF carries each input's source satoshis and locking script, which is what
+lets the validator check the script without fetching ancestors.
+
 ## Not yet proven
 
-- **A refusing seat and a broadcast refund.** Task 8.17. The finality gate is proven and the
-  refund shape is verified, but no refund has been broadcast after its locktime matured.
 - **A full hand for real value.** Task 8.16, which needs the game and money layers joined.
