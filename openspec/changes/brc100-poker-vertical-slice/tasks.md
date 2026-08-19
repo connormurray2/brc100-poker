@@ -95,7 +95,7 @@
 - [ ] 8.5 Implement buy-in funding into the pot, refusing to start a hand on a partial pot while preserving funded seats' refunds
 - [ ] 8.6 Implement settlement construction paying the winner to a spendable derived payment, with value conservation asserted
 - [ ] 8.7 Implement proposal distribution so every seat can reconstruct exactly what it is asked to sign and confirm all seats got the same proposal
-- [ ] 8.8 Implement independent per-seat verification against the seat's own hand record, refusing a wrong winner, altered amount, unexpected output, or unexpected input
+- [x] 8.8 Implement independent per-seat verification against the seat's own hand record, refusing a wrong winner, altered amount, unexpected output, or unexpected input
 - [x] 8.9 Implement local script evaluation before broadcast
 - [x] 8.10 Implement signature collection, ordered assembly, rejection of invalid signatures with attribution, and refusal to broadcast an incomplete set
 - [x] 8.11 Prove by test that output order and change presence cannot change after signing, and that modifying a signed field invalidates collected signatures
