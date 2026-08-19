@@ -83,9 +83,16 @@ func (p Payout) Remittance(sender *ec.PrivateKey) *sdk.Payment {
 }
 
 // PotFunder is the subset of a wallet needed to fund and settle a pot.
+//
+// AbortAction is part of the contract, not an optional extra. A settlement that is built and
+// then not completed leaves its provisional change recorded against a txid that never
+// existed, and that phantom coin blocks the funder from selecting ANY coin afterwards -- a
+// 500 sat payment fails against 95,936 sat of otherwise-claimable balance. Abandoning an
+// action without aborting it is therefore how a working wallet becomes an unusable one.
 type PotFunder interface {
 	CreateAction(ctx context.Context, args sdk.CreateActionArgs, originator string) (*sdk.CreateActionResult, error)
 	SignAction(ctx context.Context, args sdk.SignActionArgs, originator string) (*sdk.SignActionResult, error)
+	AbortAction(ctx context.Context, args sdk.AbortActionArgs, originator string) (*sdk.AbortActionResult, error)
 }
 
 // FundPotArgs parameterises funding a pot.
@@ -293,18 +300,30 @@ func BuildSettlement(ctx context.Context, args SettleArgs) (Settlement, error) {
 // which pot and which hand rather than reporting "script verification failed for input N"
 // several layers down.
 func Complete(ctx context.Context, w PotFunder, originator string, s Settlement, pot FundedPot, sigs []Signature, seats int) (*sdk.SignActionResult, error) {
+	// Any failure below abandons the settlement rather than leaving it reserved: a built
+	// action that is walked away from silently disables the wallet's funder.
+	abandon := func(cause error) (*sdk.SignActionResult, error) {
+		if aerr := Abandon(ctx, w, originator, s); aerr != nil {
+			// Both errors matter: the cause explains why the settlement failed, and
+			// the abandon failure means the wallet is now holding a phantom coin
+			// that will block its funder until it is cleared.
+			return nil, errors.Join(cause, aerr)
+		}
+		return nil, cause
+	}
+
 	unlock, err := Assemble(sigs, seats)
 	if err != nil {
-		return nil, err
+		return abandon(err)
 	}
 	if declared := UnlockingScriptLength(seats); len(*unlock) > int(declared) {
-		return nil, fmt.Errorf("cosign: the assembled script is %d bytes but %d were declared; the fee is underpaid",
-			len(*unlock), declared)
+		return abandon(fmt.Errorf("cosign: the assembled script is %d bytes but %d were declared; the fee is underpaid",
+			len(*unlock), declared))
 	}
 
 	s.Tx.Inputs[s.PotInput].UnlockingScript = unlock
 	if err := VerifyScript(s.Tx, s.PotInput, pot.Script, pot.Satoshis); err != nil {
-		return nil, err
+		return abandon(err)
 	}
 
 	res, err := w.SignAction(ctx, sdk.SignActionArgs{
@@ -314,9 +333,28 @@ func Complete(ctx context.Context, w PotFunder, originator string, s Settlement,
 		},
 	}, originator)
 	if err != nil {
-		return nil, fmt.Errorf("cosign: completing the settlement: %w", err)
+		return abandon(fmt.Errorf("cosign: completing the settlement: %w", err))
 	}
 	return res, nil
+}
+
+// Abandon releases a settlement that will not be completed.
+//
+// Call this on every path that walks away from a built settlement: a seat refused, verification
+// failed, the hand stalled, the process is shutting down. Skipping it leaves a phantom
+// zero-txid change output that renders the wallet unable to fund anything at all.
+func Abandon(ctx context.Context, w PotFunder, originator string, s Settlement) error {
+	if w == nil {
+		return errors.New("cosign: no wallet to abandon the settlement with")
+	}
+	if len(s.Reference) == 0 {
+		// Nothing was reserved, so there is nothing to release.
+		return nil
+	}
+	if _, err := w.AbortAction(ctx, sdk.AbortActionArgs{Reference: s.Reference}, originator); err != nil {
+		return fmt.Errorf("cosign: abandoning the settlement: %w", err)
+	}
+	return nil
 }
 
 // PayoutVout locates a payout's output in a settled transaction, so the recipient knows which
