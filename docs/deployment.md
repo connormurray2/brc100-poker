@@ -16,6 +16,20 @@ The live teratestnet deployment, as provisioned.
 
 Approximately $27/month: $12 droplet + $15 database.
 
+## Endpoints
+
+| Path | |
+|---|---|
+| `/` | JSON index: version, network, the table's identity key, stakes, and the endpoint list |
+| `/livez` | Liveness — the process only |
+| `/readyz` | Readiness, plus whether it is fit to hold value |
+| `/table?table=<id>` | Game transport; a WebSocket upgrade, so a plain GET returns 426 |
+
+The root index exists so opening the URL in a browser explains what the service is and hands over
+the identity key a player's agent needs to authorise. Any other path is a genuine 404 rather than
+the index served for everything, so a wrong path says so instead of letting a client believe it
+reached something.
+
 ## Security posture
 
 - **The database is reachable only from the droplet.** A DO database firewall restricts access to

@@ -7,6 +7,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -125,6 +126,9 @@ func run() error {
 	mux.HandleFunc("/livez", reporter.LivenessHandler())
 	mux.HandleFunc("/readyz", reporter.ReadinessHandler())
 	mux.Handle("/table", hub)
+	// A root index, so opening the URL in a browser explains what this is and where the
+	// endpoints are rather than returning a bare 404.
+	mux.HandleFunc("/", indexHandler(cfg, identity, version))
 
 	srv := &http.Server{
 		Addr:              cfg.ListenAddress,
@@ -154,6 +158,62 @@ func run() error {
 		return fmt.Errorf("shutting down: %w", err)
 	}
 	return nil
+}
+
+// indexHandler describes the service at its root.
+//
+// Anything other than the exact root path is a genuine 404: a wrong path should say so rather than
+// silently serving the index and letting a client believe it reached something.
+func indexHandler(cfg config.Service, identityKey, version string) http.HandlerFunc {
+	type endpoint struct {
+		Path        string `json:"path"`
+		Description string `json:"description"`
+	}
+	type index struct {
+		Service     string     `json:"service"`
+		Version     string     `json:"version"`
+		Network     string     `json:"network"`
+		IdentityKey string     `json:"identityKey"`
+		Seats       int        `json:"seats"`
+		BuyInSats   uint64     `json:"buyInSatoshis"`
+		SmallBlind  uint64     `json:"smallBlind"`
+		BigBlind    uint64     `json:"bigBlind"`
+		Custody     string     `json:"custody"`
+		Endpoints   []endpoint `json:"endpoints"`
+	}
+
+	// The identity key is public and a player needs it: it is what their agent authorises.
+	body := index{
+		Service:     "brc100-poker table service",
+		Version:     version,
+		Network:     "teratestnet",
+		IdentityKey: identityKey,
+		Seats:       cfg.Seats,
+		BuyInSats:   cfg.BuyInSatoshis,
+		SmallBlind:  cfg.SmallBlind,
+		BigBlind:    cfg.BigBlind,
+		Custody:     "non-custodial: this service holds no player key and cannot move a pot alone",
+		Endpoints: []endpoint{
+			{Path: "/livez", Description: "liveness — is the process running"},
+			{Path: "/readyz", Description: "readiness — can it serve play, and is it fit to hold value"},
+			{Path: "/table?table=<id>", Description: "game transport (WebSocket upgrade)"},
+		},
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(body); err != nil {
+			// The response is already partly written by this point, so there is nothing
+			// useful to send; record it and move on.
+			_ = err
+		}
+	}
 }
 
 // statusObserver applies transaction status updates.
