@@ -1,5 +1,16 @@
 # Point operations for BRC-100 wallets
 
+> **Submitted upstream as BRC-229.**
+> Pull request: https://github.com/bsv-blockchain/BRCs/pull/230
+> Canonical spec text: `wallet/0229.md` in `bsv-blockchain/BRCs`.
+>
+> The upstream version drops the `derivePoint` method proposed here: BRC-100's
+> existing `getPublicKey` already returns `d·G` for the same derivation arguments,
+> so it was redundant. It also adopts BRC-100's real argument shape — the BRC-43
+> `protocolID: [0|1|2, string]` tuple, plus `privileged`, `privilegedReason`,
+> `seekPermission` and `originator` — and is assigned call code 29.
+
+
 **Status:** draft proposal
 **Author:** brc100-poker project
 **Requires:** BRC-100 (wallet interface), BRC-42/43 (key derivation)
