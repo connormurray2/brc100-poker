@@ -66,7 +66,7 @@
 - [x] 6.10 Port the public board deal and the verifiable showdown reveal
 - [x] 6.11 Port the reveal-commitment proof, including the hostile test that derives a forged scalar and asserts the commitment rejects it
 - [x] 6.12 Port commit-reveal seat ordering
-- [ ] 6.13 Wire the shuffle proof into live play so a malicious shuffler is constrained during the hand, not merely audited afterwards
+- [x] 6.13 Wire the shuffle proof into live play so a malicious shuffler is constrained during the hand, not merely audited afterwards
 - [x] 6.14 Port the betting engine: blinds, streets, legal-action computation, and turn order including the heads-up special case
 - [x] 6.15 Port pot resolution with layered side pots, split pots, the deterministic odd-chip rule, and a chip-conservation assertion
 - [x] 6.16 Add a deterministic replay test proving two independent participants reach identical state from the same action sequence

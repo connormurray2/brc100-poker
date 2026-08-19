@@ -1,15 +1,18 @@
 package table
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
 	"github.com/cmurray/brc100-poker/internal/game/cards"
 	"github.com/cmurray/brc100-poker/internal/game/engine"
 	"github.com/cmurray/brc100-poker/internal/game/mentalpoker"
+	"github.com/cmurray/brc100-poker/internal/game/proof"
 )
 
 // DefaultActionTimeout bounds how long a table waits for a seat to act.
@@ -47,6 +50,20 @@ type HandPlayer struct {
 	// disclosed collects other seats' scalars per position, so a card can be recovered
 	// once enough of them have arrived.
 	disclosed map[int]map[int]mentalpoker.Scalar
+	// shuffleCommit and remaskCommit are this seat's own commitments, published before the
+	// deal so it is bound to the transformation it will apply.
+	shuffleCommit []byte
+	remaskCommit  []byte
+	// peerCommits records other seats' published commitments, so their openings can be
+	// checked later. A pass from a seat that never committed is refused outright.
+	peerShuffleCommit map[int][]byte
+	peerRemaskCommit  map[int][]byte
+	// inputDeck records what each seat was handed, since verifying a pass means recomputing
+	// it on that seat's input rather than on whatever the deck looks like now.
+	inputDeck map[int]mentalpoker.Deck
+	// pendingPerm is the permutation this seat committed to and will apply. Chosen up front:
+	// generating it at shuffle time would mean the commitment bound nothing.
+	pendingPerm mentalpoker.Permutation
 	// hole records the positions dealt to each seat.
 	//
 	// The betting engine and the board layout are deliberately NOT held here: the caller
@@ -91,6 +108,10 @@ func NewHandPlayer(cfg HandConfig) (*HandPlayer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("table: generating per-position scalars: %w", err)
 	}
+	perm, err := mentalpoker.NewPermutation(deckSize)
+	if err != nil {
+		return nil, fmt.Errorf("table: generating a permutation: %w", err)
+	}
 
 	return &HandPlayer{
 		session:     cfg.Session,
@@ -100,8 +121,13 @@ func NewHandPlayer(cfg HandConfig) (*HandPlayer, error) {
 		deckSize:    deckSize,
 		global:      global,
 		perPosition: perPosition,
+		pendingPerm: perm,
 		disclosed:   make(map[int]map[int]mentalpoker.Scalar),
 		hole:        make(map[int][]int),
+
+		peerShuffleCommit: make(map[int][]byte),
+		peerRemaskCommit:  make(map[int][]byte),
+		inputDeck:         make(map[int]mentalpoker.Deck),
 	}, nil
 }
 
@@ -153,12 +179,10 @@ func (h *HandPlayer) ApplyShuffle(ctx context.Context, deck mentalpoker.Deck, fr
 }
 
 func (h *HandPlayer) contributeShuffle(ctx context.Context, in mentalpoker.Deck) error {
-	perm, err := mentalpoker.NewPermutation(h.deckSize)
-	if err != nil {
-		return fmt.Errorf("table: generating a permutation: %w", err)
-	}
-
 	h.mu.Lock()
+	// The committed permutation, not a fresh one: applying a different permutation than the
+	// one committed to is exactly what the proof exists to catch.
+	perm := h.pendingPerm
 	out, err := in.ShuffleStep(h.global, perm)
 	h.mu.Unlock()
 	if err != nil {
@@ -365,3 +389,132 @@ func DecodeDeck(raw [][]byte) (mentalpoker.Deck, error) {
 
 // Session returns the session this hand player sends and receives over.
 func (h *HandPlayer) Session() *Session { return h.session }
+
+// Commitments returns this seat's shuffle and remask commitments.
+//
+// Published before the deal begins, so a seat is bound to the transformation it will apply
+// before it can see anyone else's contribution. Without this a dishonest shuffler is only
+// auditable after the money has moved.
+func (h *HandPlayer) Commitments() (shuffle, remask []byte, err error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.shuffleCommit == nil {
+		c, cerr := proof.CommitShuffle(h.global, h.pendingPerm)
+		if cerr != nil {
+			return nil, nil, fmt.Errorf("table: committing to seat %d's shuffle: %w", h.seat, cerr)
+		}
+		h.shuffleCommit = c
+	}
+	if h.remaskCommit == nil {
+		c, cerr := proof.CommitRemask(h.global, h.perPosition)
+		if cerr != nil {
+			return nil, nil, fmt.Errorf("table: committing to seat %d's remask: %w", h.seat, cerr)
+		}
+		h.remaskCommit = c
+	}
+	return h.shuffleCommit, h.remaskCommit, nil
+}
+
+// RecordPeerCommitments stores another seat's published commitments.
+//
+// A seat that never committed cannot have its pass verified, so its contribution is refused
+// rather than trusted — which is what makes the proof binding during play rather than optional.
+func (h *HandPlayer) RecordPeerCommitments(seat int, shuffle, remask []byte) error {
+	if seat < 0 || seat >= h.seats {
+		return fmt.Errorf("table: seat %d is outside 0..%d", seat, h.seats-1)
+	}
+	if len(shuffle) != proof.CommitmentSize || len(remask) != proof.CommitmentSize {
+		return fmt.Errorf("table: seat %d published malformed commitments", seat)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	// A seat must not be able to replace its commitment after seeing others' contributions.
+	if existing, ok := h.peerShuffleCommit[seat]; ok && !bytes.Equal(existing, shuffle) {
+		return fmt.Errorf("table: seat %d tried to change its shuffle commitment", seat)
+	}
+	if existing, ok := h.peerRemaskCommit[seat]; ok && !bytes.Equal(existing, remask) {
+		return fmt.Errorf("table: seat %d tried to change its remask commitment", seat)
+	}
+	h.peerShuffleCommit[seat] = shuffle
+	h.peerRemaskCommit[seat] = remask
+	return nil
+}
+
+// RecordInput remembers the deck a seat was handed, so its pass can be recomputed later.
+func (h *HandPlayer) RecordInput(seat int, deck mentalpoker.Deck) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.inputDeck[seat] = deck
+}
+
+// VerifyPeerShuffle checks a seat's opened shuffle against the commitment it published.
+//
+// Called at showdown, when masks are revealed anyway. A mismatch is attributable: it names the
+// seat that claimed one transformation and applied another.
+func (h *HandPlayer) VerifyPeerShuffle(seat int, global mentalpoker.Scalar, perm mentalpoker.Permutation, claimed mentalpoker.Deck) error {
+	h.mu.Lock()
+	commitment, committed := h.peerShuffleCommit[seat]
+	input, haveInput := h.inputDeck[seat]
+	h.mu.Unlock()
+
+	if !committed {
+		return fmt.Errorf("table: seat %d published no shuffle commitment, so its pass cannot be verified", seat)
+	}
+	if !haveInput {
+		return fmt.Errorf("table: no record of the deck seat %d was handed", seat)
+	}
+	if err := proof.VerifyShuffle(input, claimed, global, perm, commitment); err != nil {
+		return fmt.Errorf("table: seat %d's shuffle does not hold up: %w", seat, err)
+	}
+	return nil
+}
+
+// VerifyPeerRemask checks a seat's opened remask against its commitment.
+func (h *HandPlayer) VerifyPeerRemask(seat int, global mentalpoker.Scalar, perPosition []mentalpoker.Scalar, claimed mentalpoker.Deck) error {
+	h.mu.Lock()
+	commitment, committed := h.peerRemaskCommit[seat]
+	input, haveInput := h.inputDeck[seat]
+	h.mu.Unlock()
+
+	if !committed {
+		return fmt.Errorf("table: seat %d published no remask commitment, so its pass cannot be verified", seat)
+	}
+	if !haveInput {
+		return fmt.Errorf("table: no record of the deck seat %d was handed", seat)
+	}
+	if err := proof.VerifyRemask(input, claimed, global, perPosition, commitment); err != nil {
+		return fmt.Errorf("table: seat %d's remask does not hold up: %w", seat, err)
+	}
+	return nil
+}
+
+// CommittedSeats reports which seats have published commitments, so a deal can refuse to
+// proceed until every seat is bound.
+func (h *HandPlayer) CommittedSeats() []int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]int, 0, len(h.peerShuffleCommit))
+	for seat := range h.peerShuffleCommit {
+		out = append(out, seat)
+	}
+	sort.Ints(out)
+	return out
+}
+
+// openShuffle returns this seat's committed shuffle opening.
+//
+// Exported to the package for tests and for the showdown reveal, which is when a seat opens its
+// commitment so every other seat can check it.
+func (h *HandPlayer) openShuffle() (mentalpoker.Scalar, mentalpoker.Permutation) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.global, h.pendingPerm
+}
+
+// openRemask returns this seat's committed remask opening.
+func (h *HandPlayer) openRemask() (mentalpoker.Scalar, []mentalpoker.Scalar) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.global, h.perPosition
+}
