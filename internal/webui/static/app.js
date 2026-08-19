@@ -1,14 +1,17 @@
 'use strict';
 
-// The browser is a controller, not a wallet. It never holds a key: it asks the player's own agent
-// for its identity, and asks the server to apply actions. Legality is the engine's decision, so a
-// tampered client can send anything and still cannot act out of turn or bet chips it does not have.
+// The browser talks to the player's own BRC-100 wallet — BSV Desktop, or anything else the SDK's
+// substrate can reach. The key never comes here: the page asks the wallet, and the wallet asks the
+// player. Signing happens inside the wallet, which is the whole point of using BRC-100 rather than
+// asking a player to hand a key to a web page.
 
 const el = (id) => document.getElementById(id);
 const RED = new Set(['h', 'd']);
 const SUIT = { s: '♠', h: '♥', d: '♦', c: '♣' };
 
-let agentUrl = '';
+// wallet is the connected BRC-100 wallet. identityKey is its public identity, which is how the
+// table knows which seat is acting.
+let wallet = null;
 let identityKey = '';
 let mySeat = -1;
 
@@ -30,18 +33,30 @@ async function postJSON(url, payload) {
   return body;
 }
 
-// --- the agent ------------------------------------------------------------
+// --- the wallet -----------------------------------------------------------
 //
-// Asking the agent for its identity key is also the connection test: if this succeeds the agent is
-// running, reachable, and has allowed this origin.
-async function askAgentIdentity(url) {
-  const res = await fetch(url.replace(/\/+$/, '') + '/identity', {
-    headers: { accept: 'application/json' },
-  });
-  if (!res.ok) throw new Error(`the agent answered ${res.status}`);
-  const body = await res.json();
-  if (!body.identityKey) throw new Error('the agent returned no identity key');
-  return body.identityKey;
+// WalletClient('auto') races every substrate the SDK knows — the injected window.CWI provider, the
+// local HTTP ports BSV Desktop serves, react-native — and uses whichever answers. There is nothing
+// for a player to configure.
+async function connectWallet() {
+  if (!window.bsv || !window.bsv.WalletClient) {
+    throw new Error('the BSV SDK did not load');
+  }
+  const w = new window.bsv.WalletClient('auto', window.location.hostname);
+
+  // getPublicKey with identityKey is both the identity request and the liveness check: if the
+  // wallet answers, it is present, unlocked, and willing to talk to this origin.
+  const { publicKey } = await w.getPublicKey({ identityKey: true });
+  if (!publicKey) throw new Error('the wallet returned no identity key');
+
+  // The network matters: a mainnet wallet at a teratestnet table would produce coins the table
+  // cannot see, which is worth catching before a player commits anything.
+  let network = '';
+  try {
+    ({ network } = await w.getNetwork({}));
+  } catch { /* older wallets may not implement it; not fatal */ }
+
+  return { wallet: w, identityKey: publicKey, network };
 }
 
 function card(spec) {
@@ -73,43 +88,48 @@ async function loadInfo() {
     const info = await getJSON('/api/info');
     el('network').textContent = info.network || '?';
     el('version').textContent = info.version || '';
-    if (info.identityKey) el('tableKey').textContent = info.identityKey;
-    el('thisOrigin').textContent = window.location.origin;
+  
   } catch (e) {
     setStatus('connectStatus', `Could not reach the table service: ${e.message}`, 'bad');
   }
 }
 
 el('connect').addEventListener('click', async () => {
-  agentUrl = el('agentUrl').value.trim();
-  if (!agentUrl) { setStatus('connectStatus', 'Enter your agent address.', 'bad'); return; }
-  setStatus('connectStatus', 'Connecting…');
+  setStatus('connectStatus', 'Looking for a BRC-100 wallet…');
   try {
-    identityKey = await askAgentIdentity(agentUrl);
-    setStatus('connectStatus', `Connected. Your identity is ${identityKey.slice(0, 20)}…`, 'ok');
+    const conn = await connectWallet();
+    wallet = conn.wallet;
+    identityKey = conn.identityKey;
+
+    let msg = `Connected. Your identity is ${identityKey.slice(0, 20)}…`;
+    if (conn.network) {
+      msg += ` (wallet network: ${conn.network})`;
+    }
+    setStatus('connectStatus', msg, 'ok');
+
+    // A mainnet wallet at a teratestnet table is a mismatch worth naming before a player
+    // commits, not after.
+    const table = await getJSON('/api/info').catch(() => ({}));
+    if (conn.network === 'mainnet' && table.network && table.network !== 'main') {
+      setStatus('connectStatus',
+        `${msg} — but your wallet is on mainnet and this table is on ${table.network}. ` +
+        `Switch your wallet to teratestnet before playing.`, 'bad');
+    }
+
     el('seatPanel').hidden = false;
     await refresh();
   } catch (e) {
-    // The most common cause is the agent not allowing this origin, so say so rather than
-    // reporting a bare network error.
     setStatus('connectStatus',
-      `Could not reach your agent: ${e.message}. Check it is running, and that it was started ` +
-      `with -origin ${window.location.origin}`, 'bad');
+      `No BRC-100 wallet answered: ${e.message}. Install BSV Desktop and switch it to ` +
+      `teratestnet, then try again.`, 'bad');
   }
 });
 
 el('join').addEventListener('click', async () => {
   try {
-    // The agent URL travels with the join: without it this seat cannot hold its own deal
-    // secrets, and the table would have to fall back to dealing the cards itself.
-    const { seat, agentRegistered } = await postJSON('/api/join', {
-      identityKey, agentUrl: agentUrl,
-    });
+    const { seat } = await postJSON('/api/join', { identityKey });
     mySeat = seat;
-    setStatus('seatStatus',
-      `You are seat ${seat}.` +
-      (agentRegistered ? ' Your agent will hold your own cards.' : ' No agent registered.') +
-      ' Commit your buy-in when ready.', 'ok');
+    setStatus('seatStatus', `You are seat ${seat}. Commit your buy-in when ready.`, 'ok');
     await refresh();
   } catch (e) {
     setStatus('seatStatus', e.message, 'bad');

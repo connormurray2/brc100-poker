@@ -30,89 +30,29 @@ on-chain and your wallet cannot spend it. See `docs/funding.md` for the detail.
 Alternatively, send yourself a payment from [BSV Desktop](https://bsvblockchain.org) on
 teratestnet.
 
-## 3. Play in the browser
+## 3. Play in the browser with BSV Desktop
 
-Open **https://poker.siftbitcoin.com**, then:
+Open **https://poker.siftbitcoin.com** and click **Connect wallet**.
 
-1. **Connect your wallet.** Enter your agent's address. The page asks your agent for its identity
-   key — it never sees your private key, and cannot sign for you.
-2. **Take a seat**, then commit your buy-in. The hand deals once every seat is committed.
-3. **Act on your turn.** The page offers exactly the actions the engine says are legal, with the
-   real call amount and raise bounds. It does not offer an action that would be refused.
+The page finds your BRC-100 wallet automatically. `WalletClient('auto')` from `@bsv/sdk` races
+every substrate it knows — the injected `window.CWI` provider and the local HTTP ports BSV Desktop
+serves — and uses whichever answers. There is nothing to configure and no ports to open.
 
-Your agent must allow the page's origin, or the browser cannot reach it:
+1. **Connect wallet.** The page asks your wallet for its identity key. Your private key never
+   leaves the wallet.
+2. **Take a seat**, then commit your buy-in.
+3. **Act on your turn.** The page offers exactly the actions the engine says are legal.
+4. **Approve signing in your wallet.** When the pot settles, BSV Desktop prompts you. The page
+   cannot sign for you, and does not see your key.
 
-```sh
-go run ./cmd/agent -key secrets/player.key -db secrets/player.db \
-  -listen 127.0.0.1:8091 \
-  -origin https://poker.siftbitcoin.com \
-  -table <the table's identity key>
-```
+Make sure BSV Desktop is on **teratestnet** — the page checks and warns if your wallet is on
+mainnet while the table is not.
 
-That `-origin` flag is a deliberate allowlist rather than a wildcard: the agent signs
-transactions, so any page being able to reach it would let a hostile site prompt your wallet.
+### The headless alternative
 
-## 4. Run your agent
-
-```sh
-go run ./cmd/agent \
-  -key secrets/player.key \
-  -db secrets/player.db \
-  -listen 127.0.0.1:8091 \
-  -table <the table's identity key>
-```
-
-It prints your identity key, your balance, and the substrate audience. Give the table operator
-your **identity key** and the address your agent listens on.
-
-The agent binds to `127.0.0.1` by default. Exposing it beyond your own machine means exposing a
-signing endpoint, so if you do, use `-require-tls` and understand what you are publishing.
-
-## 5. Approve signing requests
-
-When the hand settles, your agent shows you what it is being asked to sign:
-
-```
-─── signing request ────────────────────────────────────
-  hand:    e2e-hand-1
-  purpose: pot settlement
-  pot:     2c64b4de…:0 (4000 sat)
-  outputs:
-        3600 sat  an expected recipient     76a914675614ecd1924e05…
-         365 sat  another seat              76a914d945141fd58cae1a…
-  fee:     35 sat
-────────────────────────────────────────────────────────
-  sign this? [y/N]
-```
-
-Two things happen before you are ever asked:
-
-1. **The agent checks the transaction against its own record of the hand.** A settlement that
-   pays the wrong seat, alters an amount, spends a different pot, or carries an output you never
-   agreed to is refused outright — you are not asked to rubber-stamp something the agent could
-   already tell was wrong.
-2. **You are shown the material terms**, not just "sign this?". Every output is listed, because
-   an undeclared extra output is exactly how a pot gets skimmed.
-
-Anything other than an explicit `y` declines. A mistyped answer does not move money.
-
-`-auto-approve` exists for development and gives away the protection the agent exists to
-provide. It warns loudly, and it is never the default.
-
-## Dealerless dealing
-
-When every seat at a table has registered an agent, the deal runs **through the agents** and nobody
-— including the table service — can read a card they were not dealt. The table sequences the chain
-and relays disclosures; the scalars that decrypt a card never leave the agent that owns them.
-
-The UI labels which kind of deal you got:
-
-- **dealerless** — every seat held its own cards. Nothing else could read them.
-- **server-dealt** — a seat had no agent, so the server shuffled and can see the cards. Fine for a
-  demonstration, and labelled so you are never left assuming the stronger property.
-
-A failed dealerless deal is **not** silently downgraded to a dealt one. If the chain cannot
-complete, the hand does not start.
+`cmd/agent` exists for a seat with no browser — a bot, a test, or a server-side player. It holds a
+key on its own machine and serves the same BRC-100 substrate. A human playing in a browser does not
+need it.
 
 ## What protects you
 

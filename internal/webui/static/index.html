@@ -16,29 +16,24 @@
 </header>
 
 <main>
-  <!-- Step 1: connect the player's own agent. The key never comes here. -->
+  <!-- Step 1: connect your BRC-100 wallet. The key never leaves it. -->
   <section class="panel" id="connectPanel">
-    <h2>1 · Connect your wallet</h2>
+    <h2>1 · Connect your BRC-100 wallet</h2>
     <p class="hint">
-      Your key stays in your own agent. This page never sees it, and cannot sign for you — it asks
-      your agent, and your agent asks you.
+      Your key stays in your wallet — BSV Desktop, or any BRC-100 wallet the SDK can reach. This
+      page never sees it, and cannot sign for you: it asks your wallet, and your wallet asks you.
     </p>
     <div class="controls">
-      <label>Your agent
-        <input id="agentUrl" type="text" value="http://127.0.0.1:8091" size="26">
-      </label>
-      <button id="connect" class="primary">Connect</button>
+      <button id="connect" class="primary">Connect wallet</button>
     </div>
     <div id="connectStatus" class="status"></div>
 <details>
-  <summary>Don't have an agent running?</summary>
-<pre class="code">go run ./cmd/keygen -out secrets/player.key
-go run ./cmd/fund   -key secrets/player.key -db secrets/player.db
-
-go run ./cmd/agent -key secrets/player.key -db secrets/player.db \
-  -listen 127.0.0.1:8091 \
-  -origin <span id="thisOrigin">…</span> \
-  -table <span id="tableKey">…</span></pre>
+  <summary>No wallet detected?</summary>
+    <p class="hint">
+      Install <a href="https://bsvblockchain.org" target="_blank" rel="noreferrer">BSV Desktop</a>
+      and switch it to <b>teratestnet</b>. The page finds it automatically over the BRC-100
+      substrate — nothing to configure and no ports to open.
+    </p>
 </details>
   </section>
 
@@ -90,6 +85,7 @@ go run ./cmd/agent -key secrets/player.key -db secrets/player.db \
 </main>
 
 <footer><span id="updated" class="muted"></span></footer>
+<script src="/bsv-sdk.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

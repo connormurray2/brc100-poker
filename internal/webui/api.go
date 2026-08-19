@@ -293,9 +293,9 @@ func (s *Store) Handler(identityKey, version, network string) http.Handler {
 		}
 		var req struct {
 			IdentityKey string `json:"identityKey"`
-			// AgentURL is where this seat's agent serves the substrate. Without it the
-			// seat cannot hold its own deal secrets, so the table cannot deal without
-			// a dealer.
+			// AgentURL is optional and only used by a headless seat that runs its own
+			// agent. A browser player connecting a BRC-100 wallet does not send one:
+			// their wallet is reached from the page, not registered with the table.
 			AgentURL string `json:"agentUrl"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
