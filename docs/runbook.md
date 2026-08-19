@@ -158,6 +158,15 @@ The drill, which gates real-value play:
 Until step 6, `realValueReady` is false and the service will not put real value at risk. That is
 the intended interlock: an unrestorable wallet does not lose availability, it loses the coins.
 
+`cmd/spendprobe` performs step 4. It exists because step 4 is the one that matters and the one
+easiest to skip: a restored wallet that lists outputs but cannot sign is worthless, and the
+difference is invisible until something tries to move a coin.
+
+**Drill performed 2026-08-19.** The fork restored the wallet's 100,000 sat, and the restored wallet
+signed and broadcast `9a55d640ee987d9d3c1e0576cd1f02f10798b75c4f01d277ba626573e8e98e61`, taking the
+balance to 98,942 sat. The fork was then destroyed and `POKER_BACKUP_VERIFIED_AT` recorded, at
+which point `/readyz` began reporting `realValueReady: true`.
+
 **Do not restore an older snapshot as a routine rollback.** The wallet database is not
 rollback-safe: an older snapshot can permanently lose knowledge of coins created since. Schema
 changes are additive and forward-only, and a restore is a deliberate recovery action.

@@ -114,12 +114,12 @@
 - [x] 9.4 Assert by test that the table service holds no player private key
 - [x] 9.5 Provision the Digital Ocean droplet in nyc1 and managed Postgres, keeping unauthenticated interfaces off the public network
 - [x] 9.6 Configure automated database backups and surface backup failure
-- [ ] 9.7 Perform and document a restore drill proving a restored backup yields a working wallet, and gate real-value play on it
+- [x] 9.7 Perform and document a restore drill proving a restored backup yields a working wallet, and gate real-value play on it
 - [x] 9.8 Implement liveness and readiness checks, with readiness reflecting database and status-tracking availability
 - [x] 9.9 Implement chain-service health reporting, refusing to start a new real-value hand when the oracle is unreachable and informing players when it fails mid-hand
 - [x] 9.10 Implement money-movement logging recording every broadcast, its purpose, its classified outcome, and any rejection reason
 - [x] 9.11 Verify a hand's full money history is reconstructable from the records
-- [ ] 9.12 Deploy from a tagged artifact and verify rollback restores the previous version without reverting the wallet database
+- [x] 9.12 Deploy from a tagged artifact and verify rollback restores the previous version without reverting the wallet database
 - [ ] 9.13 Play a complete real-value hand against the deployed service from at least two independent player agents
 
 ## 10. Close-out

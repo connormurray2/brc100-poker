@@ -9,7 +9,7 @@ The live teratestnet deployment, as provisioned.
 | Droplet | `poker-table`, `167.99.239.236`, nyc1, `s-1vcpu-2gb`, Ubuntu 24.04 |
 | Database | `poker-db`, DO managed Postgres 16, nyc1, `db-s-1vcpu-1gb` |
 | VPC | `a3417bc5-…` — the same nyc1 VPC as the other BSV services |
-| DNS record | `poker.bsvcloudsolutions.com` A → `167.99.239.236` (in DO) |
+| DNS record | `poker.siftbitcoin.com` A → `167.99.239.236` (in DO) |
 | Service | `poker-table.service`, listening on `127.0.0.1:8080` |
 | Proxy | Caddy, terminating TLS on 443 |
 | Table wallet | `02aa7acd60b5ee06b4e473f2aa9550710356cc0ef1b018378e321f8f6499dcaa68`, funded 100,000 sat |
@@ -32,11 +32,9 @@ Approximately $27/month: $12 droplet + $15 database.
 ## Verified working
 
 ```
-$ curl http://127.0.0.1:8080/readyz
+$ curl https://poker.siftbitcoin.com/readyz
 {"ready":true,
- "realValueReady":false,
- "realValueBlockedBy":["real-value play is not enabled",
-   "no database restore has been proved: an unrestorable wallet loses the coins, not just availability"],
+ "realValueReady":true,
  "dependencies":[
    {"name":"database","state":"up"},
    {"name":"headers","state":"up","detail":"tip at height 29705"},
@@ -47,44 +45,32 @@ $ curl http://127.0.0.1:8080/readyz
 The service connected to managed Postgres over the private VPC endpoint, reached the teratestnet
 oracle and header service, started its monitor daemon, and resolved its wallet identity.
 
-`realValueReady` is correctly **false**: real-value play is gated on a proved database restore, and
-that drill has not been run. See the runbook.
+`realValueReady` is **true** because the restore drill was performed. Before the drill it was
+correctly false, which is the interlock working: real value is gated on a proved restore, not on an
+operator's intention to run one.
 
-## Outstanding: domain delegation
+## Domain and TLS
 
-**`poker.bsvcloudsolutions.com` does not resolve, and this cannot be fixed from DO.**
+Live at **https://poker.siftbitcoin.com** with a Let's Encrypt certificate
+(`CN=poker.siftbitcoin.com`, issued 2026-08-19).
 
-The A record exists and is correct — querying DO's nameserver directly returns it:
+`siftbitcoin.com` is delegated to DigitalOcean's nameservers, so ACME validation succeeded on the
+first attempt. An earlier attempt on `bsvcloudsolutions.com` failed for a reason worth recording:
+the A record was correct and DO's own nameserver returned it, but the domain has **no nameservers at
+the `.com` registry**, so no resolver ever asks DO for the zone. Most domains in this account are in
+that state; check `dig +short NS <domain>` returns something before pointing a service at it.
 
-```
-$ dig +short poker.bsvcloudsolutions.com @ns1.digitalocean.com
-167.99.239.236
-```
+Note `siftbitcoin.com` has a wildcard `A *` record, so `poker.siftbitcoin.com` resolved to the wrong
+host until an explicit record was added. An explicit record takes precedence over the wildcard.
 
-But `bsvcloudsolutions.com` has **no nameservers at the `.com` registry**, so no resolver ever
-asks DO for it. The same is true of most domains in this DO account; only `connorpmurray.com` is
-delegated, and to Namecheap rather than DO.
+## Restore drill: performed
 
-Two consequences:
+Run 2026-08-19 against a fork of the live database. The restored wallet reported its 100,000 sat
+**and signed and broadcast** `9a55d640ee987d9d3c1e0576cd1f02f10798b75c4f01d277ba626573e8e98e61`,
+which is the step that actually matters — reading a balance proves nothing about signing.
 
-1. The service is reachable only by IP until this is resolved.
-2. **Caddy cannot obtain a TLS certificate**, because ACME validation requires the name to resolve
-   publicly. It is installed and configured correctly and will succeed on its own once delegation
-   is in place.
-
-**To fix**, at the registrar for `bsvcloudsolutions.com`, set the nameservers to:
-
-```
-ns1.digitalocean.com
-ns2.digitalocean.com
-ns3.digitalocean.com
-```
-
-Then Caddy will issue a certificate within a minute or two of the record propagating, with no
-further action here.
-
-**Alternatively**, use a delegated domain. `connorpmurray.com` resolves today, but its DNS is at
-Namecheap, so the record would have to be added there rather than in DO.
+The fork was destroyed, `POKER_BACKUP_VERIFIED_AT=2026-08-19` recorded, and `POKER_REAL_VALUE_PLAY`
+enabled. `/readyz` now reports `realValueReady: true`.
 
 ## Deploying a new version
 
