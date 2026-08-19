@@ -47,3 +47,10 @@ func ResolveServices() (Services, error) {
 func FeeModel() defs.FeeModel {
 	return defs.FeeModel{Type: defs.SatPerKB, Value: FeeRateSatPerKB}
 }
+
+// MinBroadcastFeeRateSatPerKB is the floor below which a transaction fails locally
+// instead of being broadcast and rejected.
+//
+// A rejection is a verdict, not a transport failure: it cannot be retried. Turning
+// underpayment into a local error is strictly better than discovering it remotely.
+const MinBroadcastFeeRateSatPerKB = 100

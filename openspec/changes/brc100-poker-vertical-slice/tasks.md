@@ -9,14 +9,14 @@
 
 ## 2. Wallet wiring against Teratestnet
 
-- [ ] 2.1 Implement wallet construction for Teratestnet: services config, storage provider, migration, and wallet, with the network set explicitly on every component that accepts one
-- [ ] 2.2 Derive and set the Arcade callback token explicitly; add a startup check that fails if it is unset
-- [ ] 2.3 Set the fee rate to 125 sat/kB and enable the minimum-broadcast-fee-rate guard so underpayment fails locally
-- [ ] 2.4 Start the monitor daemon with a status observer that is non-blocking, panic-free, and idempotent; assert exactly one status stream is opened
-- [ ] 2.5 Implement the broadcast wrapper as the single path to Arcade, classifying accepted / rejected / backpressured / indeterminate, treating the rejection flag as authoritative even when no error is returned
-- [ ] 2.6 Add retry policy to the wrapper: never retry a rejection, always retry backpressure after its indicated delay, reconcile an indeterminate outcome by querying status
+- [x] 2.1 Implement wallet construction for Teratestnet: services config, storage provider, migration, and wallet, with the network set explicitly on every component that accepts one
+- [x] 2.2 Derive and set the Arcade callback token explicitly; add a startup check that fails if it is unset
+- [x] 2.3 Set the fee rate to 125 sat/kB and enable the minimum-broadcast-fee-rate guard so underpayment fails locally
+- [x] 2.4 Start the monitor daemon with a status observer that is non-blocking, panic-free, and idempotent; assert exactly one status stream is opened
+- [x] 2.5 Implement the broadcast wrapper as the single path to Arcade, classifying accepted / rejected / backpressured / indeterminate, treating the rejection flag as authoritative even when no error is returned
+- [x] 2.6 Add retry policy to the wrapper: never retry a rejection, always retry backpressure after its indicated delay, reconcile an indeterminate outcome by querying status
 - [ ] 2.7 Implement funds entry via internalize-payment (the spendable form), and confirm a credited coin can subsequently be spent
-- [ ] 2.8 Implement network-value translation so no internal network name is ever returned at an exposed boundary
+- [x] 2.8 Implement network-value translation so no internal network name is ever returned at an exposed boundary
 - [ ] 2.9 Write integration tests against live Teratestnet covering funding, spending, and status progression to a settled state
 
 ## 3. Co-signing spike — go/no-go gate
