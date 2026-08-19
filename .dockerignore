@@ -1,0 +1,14 @@
+# Never ship secrets or wallet databases into an image. The database IS the wallet.
+secrets/
+*.db
+*.db-shm
+*.db-wal
+*.env
+.env*
+
+# Build and VCS noise.
+.git/
+dist/
+bin/
+openspec/
+docs/
