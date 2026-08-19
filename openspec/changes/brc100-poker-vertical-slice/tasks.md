@@ -102,7 +102,7 @@
 - [x] 8.12 Implement non-cooperation handling: bounded outcome, attribution, and a preserved recovery path for every other seat
 - [x] 8.13 Prove by test that a settlement and its hand's refunds cannot both succeed
 - [x] 8.14 Implement crash recovery that determines from the ledger whether a transaction was broadcast, without double-spending or abandoning the pot
-- [ ] 8.15 Implement player-visible money state for commitment, settlement, and a stalled hand including refund availability
+- [x] 8.15 Implement player-visible money state for commitment, settlement, and a stalled hand including refund availability
 - [x] 8.16 Play a complete hand for real value on Teratestnet between independent wallets: buy-in, deal, betting, showdown, settlement, and payout
 - [x] 8.17 Test the stall path for real: fund a pot, have a seat refuse to sign, and confirm every other seat recovers its stake via refund
 
