@@ -80,10 +80,10 @@
 - [x] 7.5 Implement table lifecycle: creation with declared terms, advertisement, join, and close
 - [x] 7.6 Bind each seat to a proven identity and reject messages not attributable to that seat, including an identity taking two seats
 - [x] 7.7 Enforce ordered protocol progression, rejecting or deferring messages for steps that are not current
-- [ ] 7.8 Implement action timeouts defaulting to check when facing no bet and fold when facing one
+- [x] 7.8 Implement action timeouts defaulting to check when facing no bet and fold when facing one
 - [x] 7.9 Implement deal and reveal timeouts that attribute the stall to the responsible seat
 - [x] 7.10 Implement reconnect and resynchronisation without re-sending another seat's private material
-- [ ] 7.11 Run a full multi-seat hand with no money over the real transport
+- [x] 7.11 Run a full multi-seat hand with no money over the real transport
 - [x] 7.12 Delete the old subnet-sweeping peer discovery and the desktop profile model rather than porting either
 
 ## 8. Pot, co-signing, and settlement
