@@ -120,7 +120,7 @@
 - [x] 9.10 Implement money-movement logging recording every broadcast, its purpose, its classified outcome, and any rejection reason
 - [x] 9.11 Verify a hand's full money history is reconstructable from the records
 - [x] 9.12 Deploy from a tagged artifact and verify rollback restores the previous version without reverting the wallet database
-- [ ] 9.13 Play a complete real-value hand against the deployed service from at least two independent player agents
+- [x] 9.13 Play a complete real-value hand against the deployed service from at least two independent player agents
 
 ## 10. Close-out
 

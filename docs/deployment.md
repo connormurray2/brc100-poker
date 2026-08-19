@@ -102,3 +102,30 @@ lose knowledge of coins created since.
 
 Until then the service serves play but refuses to put real value at risk, which is the intended
 interlock.
+
+## Real-value hand through independent agents
+
+Run 2026-08-19 against the deployed service, with each seat signing through its **own** agent over
+the substrate rather than one process holding both keys — the difference that makes the
+non-custodial claim real:
+
+```
+agent 0 identity 02f327c0fd9bd2bb…
+agent 1 identity 03ad23a40e43c21a…
+pot funded: dd1be89101f1d672…:0 for 4000 sat
+seat 0 sees: 2000 sat committed to a 4000 sat pot. If the hand stalls you can
+             reclaim it from block 29870.
+seat 0 signed through its own agent
+seat 1 signed through its own agent
+SETTLEMENT BROADCAST: d1939e8c9efd781f…
+seat 1 sees: Hand settled, 3600 sat to you. Not spendable until the settlement is mined.
+WINNER BALANCE: 100000 -> 103600 sat (delta +3600)
+seat 1 now sees: Hand settled, 3600 sat received and spendable.
+```
+
+Each signature was produced by an agent that verified the settlement against its own record of the
+hand and could have refused. The winner's payout was internalized through its own agent, so the
+coin became spendable without the coordinating process ever holding that seat's key.
+
+The deployed service was independently confirmed ready first: all four dependencies up, a valid
+Let's Encrypt certificate for `poker.siftbitcoin.com`, and `realValueReady: true`.
