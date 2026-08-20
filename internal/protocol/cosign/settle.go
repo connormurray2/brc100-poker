@@ -377,12 +377,31 @@ func PayoutVout(tx *transaction.Transaction, p Payout) (uint32, error) {
 // RefundArgs parameterises a pre-signed refund.
 type RefundArgs struct {
 	Pot FundedPot
-	// Recipient is the seat getting its stake back.
+	// Recipient is the seat getting its stake back. Single-recipient form; prefer Recipients
+	// for a shared pot, since paying one seat the whole pot rewards refusing to settle.
 	Recipient *ec.PublicKey
-	// Satoshis is the refunded amount, less the refund's own fee.
+	// Satoshis is the refunded amount, less the refund's own fee. Single-recipient form.
 	Satoshis uint64
+	// Recipients pays every seat its own balance in one transaction. This is what makes
+	// refusing to settle unprofitable: a seat recovers exactly what it holds, no more.
+	//
+	// Set either Recipient/Satoshis or Recipients, never both.
+	Recipients []RefundOutput
 	// LockHeight is the height at which the refund becomes spendable.
+	//
+	// For a session pot this must DECREASE with each new refund, so the newest state is
+	// spendable first and a stale refund loses the race. See docs/session-pot-design.md.
 	LockHeight uint32
+	// Fee is deducted from the largest recipient when Recipients is used. Taken from the
+	// largest because a small balance may not cover it.
+	Fee uint64
+}
+
+// RefundOutput is one seat's share of a refund.
+type RefundOutput struct {
+	Recipient *ec.PublicKey
+	// Satoshis is this seat's balance, before the shared fee is deducted.
+	Satoshis uint64
 }
 
 // BuildRefund constructs an unsigned refund of the pot.
@@ -390,6 +409,9 @@ type RefundArgs struct {
 // The input carries a non-final sequence so the locktime actually binds: with a final
 // sequence the transaction is spendable immediately and the timelock is decorative.
 func BuildRefund(args RefundArgs) (*transaction.Transaction, error) {
+	if len(args.Recipients) > 0 {
+		return buildSharedRefund(args)
+	}
 	if args.Recipient == nil {
 		return nil, errors.New("cosign: a refund needs a recipient")
 	}
@@ -443,4 +465,81 @@ func chainHashFromHex(s string) (*chainhash.Hash, error) {
 		return nil, fmt.Errorf("cosign: %q is not a valid txid: %w", s, err)
 	}
 	return h, nil
+}
+
+// buildSharedRefund pays every seat its own balance from a shared pot.
+//
+// One transaction rather than one per seat, which removes the first-broadcast race that a
+// per-seat refund creates: with N refunds each paying one seat everything, whoever broadcasts
+// first takes the pot. Here there is a single outcome and it does not matter who broadcasts it.
+func buildSharedRefund(args RefundArgs) (*transaction.Transaction, error) {
+	if args.Recipient != nil || args.Satoshis != 0 {
+		return nil, errors.New("cosign: set either Recipient/Satoshis or Recipients, not both")
+	}
+	if args.Pot.Script == nil {
+		return nil, errors.New("cosign: the pot's locking script is required")
+	}
+	if args.LockHeight == 0 {
+		return nil, errors.New("cosign: a refund needs a locktime, or it is spendable immediately")
+	}
+
+	var total uint64
+	largest, largestIdx := uint64(0), -1
+	for i, r := range args.Recipients {
+		if r.Recipient == nil {
+			return nil, fmt.Errorf("cosign: refund recipient %d has no key", i)
+		}
+		if r.Satoshis == 0 {
+			return nil, fmt.Errorf("cosign: refund recipient %d is owed nothing; omit it instead", i)
+		}
+		total += r.Satoshis
+		if r.Satoshis > largest {
+			largest, largestIdx = r.Satoshis, i
+		}
+	}
+	if total != args.Pot.Satoshis {
+		// The balances must account for the whole pot, or the difference is unexplained value
+		// and a seat cannot tell whether it is a fee or a skim.
+		return nil, fmt.Errorf("cosign: the balances total %d but the pot holds %d", total, args.Pot.Satoshis)
+	}
+	if args.Fee == 0 {
+		return nil, errors.New("cosign: a shared refund needs a fee")
+	}
+	if largestIdx < 0 || largest <= args.Fee {
+		return nil, errors.New("cosign: no balance is large enough to carry the refund fee")
+	}
+
+	txid, err := chainHashFromHex(args.Pot.Txid)
+	if err != nil {
+		return nil, err
+	}
+	tx := transaction.NewTransaction()
+	tx.AddInput(&transaction.TransactionInput{
+		SourceTXID:       txid,
+		SourceTxOutIndex: args.Pot.Vout,
+		// Non-final, so the locktime binds.
+		SequenceNumber: transaction.DefaultSequenceNumber - 1,
+	})
+	tx.Inputs[0].SetSourceTxOutput(&transaction.TransactionOutput{
+		Satoshis:      args.Pot.Satoshis,
+		LockingScript: args.Pot.Script,
+	})
+
+	for i, r := range args.Recipients {
+		amount := r.Satoshis
+		if i == largestIdx {
+			amount -= args.Fee
+		}
+		addr, err := script.NewAddressFromPublicKey(r.Recipient, false)
+		if err != nil {
+			return nil, fmt.Errorf("cosign: deriving refund address %d: %w", i, err)
+		}
+		lock, err := p2pkh.Lock(addr)
+		if err != nil {
+			return nil, fmt.Errorf("cosign: building refund script %d: %w", i, err)
+		}
+		tx.AddOutput(&transaction.TransactionOutput{Satoshis: amount, LockingScript: lock})
+	}
+	tx.LockTime = args.LockHeight
+	return tx, nil
 }
