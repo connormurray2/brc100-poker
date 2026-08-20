@@ -63,6 +63,14 @@ type LiveTable struct {
 	// when too few remain.
 	sittingOut map[int]bool
 
+	// pots puts real value behind a hand. Nil means the table plays for chips, which the view
+	// reports rather than leaving a player to assume value is at stake.
+	pots *PotManager
+	// settlementTxID is the broadcast settlement of the last completed hand, if any.
+	settlementTxID string
+	// readyToStart means every seat has committed and a value hand is waiting on its pot.
+	readyToStart bool
+
 	now func() time.Time
 }
 
@@ -88,6 +96,27 @@ func NewLiveTable(terms table.Terms) (*LiveTable, error) {
 		stalledSeat: -1,
 		now:         time.Now,
 	}, nil
+}
+
+// SetPotManager attaches the manager that funds pots and settles on chain.
+func (l *LiveTable) SetPotManager(m *PotManager) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.pots = m
+}
+
+// ForValue reports whether hands at this table move real coins.
+func (l *LiveTable) ForValue() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.pots.Enabled()
+}
+
+// SettlementTxID returns the last completed hand's settlement, if it was settled on chain.
+func (l *LiveTable) SettlementTxID() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.settlementTxID
 }
 
 // SetCoordinator attaches the coordinator that runs the dealerless deal.
@@ -189,6 +218,34 @@ func (l *LiveTable) Ready(identityKey string) error {
 			return nil
 		}
 	}
+	// A value table funds its pot first, and that cannot happen here: it broadcasts a
+	// transaction and collects a refund signature from every seat, which is a round trip per
+	// seat and would block this lock for seconds. RunHands starts the hand instead.
+	if l.pots.Enabled() {
+		l.readyToStart = true
+		return nil
+	}
+	return l.dealLocked()
+}
+
+// PendingStart reports that every seat has committed and a value hand is waiting to be funded.
+func (l *LiveTable) PendingStart() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.readyToStart && l.st == nil
+}
+
+// StartFundedHand funds the pot and deals the first hand of a session.
+func (l *LiveTable) StartFundedHand(ctx context.Context, height uint32) error {
+	if err := l.OpenPotForHand(ctx, height); err != nil {
+		return err
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.readyToStart = false
+	if l.st != nil {
+		return nil
+	}
 	return l.dealLocked()
 }
 
@@ -268,19 +325,8 @@ func (l *LiveTable) dealLocked() error {
 // coordinator only ever learns a seat's cards because that seat's agent read them and reported
 // them, which is the same trust a player extends by sitting down.
 func (l *LiveTable) buildDeckLocked() ([]cards.Card, bool, map[int][]cards.Card, error) {
-	endpoints := make([]AgentEndpoint, 0, len(l.seats))
-	for _, s := range l.seats {
-		url, ok := l.agentURL[s.IdentityKey]
-		if !ok {
-			// A seat without an agent cannot hold secrets, so no dealerless deal is
-			// possible for this table.
-			endpoints = nil
-			break
-		}
-		endpoints = append(endpoints, AgentEndpoint{
-			Seat: s.Index, IdentityKey: s.IdentityKey, URL: url,
-		})
-	}
+	// A seat without a registered wallet cannot hold secrets, so no dealerless deal is possible.
+	endpoints := l.endpointsLocked()
 
 	if l.coord == nil || len(endpoints) != len(l.seats) {
 		deck, err := cards.Shuffled()
@@ -347,7 +393,9 @@ func (l *LiveTable) Act(identityKey, action string, to int64) error {
 		for s, v := range l.st.Payouts {
 			payouts[s] = uint64(v)
 		}
-		l.money.Settled("", payouts)
+		// The txid is filled in by SettleOnChain once every seat has signed. Recording an
+		// empty one here would tell a player the hand settled on chain when it has not.
+		l.money.Settled(l.settlementTxID, payouts)
 		l.finishHandLocked()
 	}
 	return nil
@@ -548,6 +596,8 @@ func (l *LiveTable) View(seat int) TableView {
 		StallReason:      l.stallReason,
 		ToAct:            -1,
 		UpdatedAt:        l.now(),
+		ForValue:         l.pots.Enabled(),
+		SettlementTxID:   l.settlementTxID,
 	}
 	if l.st != nil {
 		v.Street = l.st.Street.String()
@@ -599,13 +649,35 @@ func cardStrings(cs []cards.Card) []string {
 // can read the result, then deals the next. A dealing failure stops the session rather than
 // retrying: a deal that cannot complete usually means a seat's wallet has gone, and spinning on it
 // would bury the reason under repeated identical errors.
-func (l *LiveTable) RunHands(ctx context.Context, settle time.Duration, log *slog.Logger) {
+func (l *LiveTable) RunHands(ctx context.Context, settle time.Duration, heightFn func(context.Context) (uint32, error), log *slog.Logger) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-time.After(500 * time.Millisecond):
 		}
+		// A value table's first hand waits here for its pot: every seat has committed, and
+		// funding plus refunds must complete before any cards exist.
+		if l.PendingStart() {
+			height, err := heightFn(ctx)
+			if err != nil {
+				if log != nil {
+					log.Error("cannot read the chain height to fund a pot", "error", err)
+				}
+				return
+			}
+			if err := l.StartFundedHand(ctx, height); err != nil {
+				if log != nil {
+					log.Error("the pot could not be funded; the session stops here", "error", err)
+				}
+				return
+			}
+			if log != nil {
+				log.Info("hand started with a funded pot", "table", l.id)
+			}
+			continue
+		}
+
 		if !l.HandOver() {
 			continue
 		}
@@ -615,6 +687,36 @@ func (l *LiveTable) RunHands(ctx context.Context, settle time.Duration, log *slo
 			return
 		case <-time.After(settle):
 		}
+		// Settle the hand that just finished before dealing another. Doing it in this order
+		// means a pot is never left open while a new hand's pot is funded, which would leave
+		// two live pots and no way for a player to tell which refund protects which stake.
+		if l.ForValue() {
+			if txid, err := l.SettleOnChain(ctx); err != nil {
+				if log != nil {
+					log.Error("the hand could not be settled on chain; the session stops here",
+						"error", err)
+				}
+				return
+			} else if txid != "" && log != nil {
+				log.Info("hand settled on chain", "txid", txid)
+			}
+		}
+
+		// For a value table the next hand needs its own pot, so clear the finished hand and
+		// go back through the funded start path.
+		if l.ForValue() {
+			if ok, err := l.PrepareNextHand(); err != nil || !ok {
+				if err != nil && log != nil {
+					log.Error("the next hand could not be prepared", "error", err)
+				}
+				if log != nil && err == nil {
+					log.Info("the session ended: a seat left or is out of chips")
+				}
+				return
+			}
+			continue
+		}
+
 		dealt, err := l.NextHand()
 		if err != nil {
 			if log != nil {
@@ -632,4 +734,132 @@ func (l *LiveTable) RunHands(ctx context.Context, settle time.Duration, log *slo
 			log.Info("dealt the next hand", "table", l.id)
 		}
 	}
+}
+
+// SettleOnChain spends the pot to the winners of the completed hand.
+//
+// Driven from outside the table lock: it collects a signature from every seat, which is a round
+// trip to each player's wallet and can take seconds. Holding the lock across that would freeze
+// every other player's poll.
+//
+// A refusing seat leaves the pot unspent and every seat still holding its refund. That is the
+// designed outcome of a non-custodial pot, not a loss, and it is reported as a stall.
+func (l *LiveTable) SettleOnChain(ctx context.Context) (string, error) {
+	l.mu.Lock()
+	if l.pots == nil || !l.pots.Enabled() || l.st == nil || !l.st.Done || l.settlementTxID != "" {
+		l.mu.Unlock()
+		return "", nil
+	}
+	handID := l.handIDLocked()
+	payouts := make(map[int]uint64, len(l.st.Payouts))
+	for seat, v := range l.st.Payouts {
+		if v > 0 {
+			payouts[seat] = uint64(v)
+		}
+	}
+	seats := l.endpointsLocked()
+	l.mu.Unlock()
+
+	if len(payouts) == 0 || len(seats) == 0 {
+		return "", nil
+	}
+
+	txid, err := l.pots.Settle(ctx, handID, seats, payouts)
+	if err != nil {
+		l.mu.Lock()
+		l.stallReason = err.Error()
+		l.mu.Unlock()
+		return "", err
+	}
+
+	l.mu.Lock()
+	l.settlementTxID = txid
+	l.money.Settled(txid, payouts)
+	l.mu.Unlock()
+	return txid, nil
+}
+
+// endpointsLocked lists the seats as the coordinator addresses them.
+func (l *LiveTable) endpointsLocked() []AgentEndpoint {
+	out := make([]AgentEndpoint, 0, len(l.seats))
+	for _, s := range l.seats {
+		url, ok := l.agentURL[s.IdentityKey]
+		if !ok {
+			return nil
+		}
+		out = append(out, AgentEndpoint{Seat: s.Index, IdentityKey: s.IdentityKey, URL: url})
+	}
+	return out
+}
+
+// OpenPotForHand funds the pot and distributes refunds before a hand is dealt.
+//
+// Runs outside the table lock: funding broadcasts a transaction and every refund needs a
+// signature from every seat, which is a round trip per seat.
+//
+// The ordering is the safety property. No seat's stake is treated as committed until that seat
+// holds a fully-signed refund, so a player whose opponent disappears waits for a locktime rather
+// than losing their money.
+func (l *LiveTable) OpenPotForHand(ctx context.Context, height uint32) error {
+	l.mu.Lock()
+	if l.pots == nil || !l.pots.Enabled() {
+		l.mu.Unlock()
+		return nil // a chips-only table; the view says so
+	}
+	handID := l.handIDLocked()
+	seats := l.endpointsLocked()
+	pot := l.terms.BuyInSatoshis * uint64(len(l.seats))
+	l.mu.Unlock()
+
+	if len(seats) < 2 {
+		return errors.New("webui: a pot needs every seat to have a reachable wallet")
+	}
+
+	if _, err := l.pots.OpenPot(ctx, handID, seats, pot, height); err != nil {
+		return err
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.money.SetHeight(height)
+	for _, s := range seats {
+		// Refunds exist for every seat before any stake is called committed.
+		if err := l.money.RefundHeld(s.Seat); err != nil {
+			return err
+		}
+	}
+	for _, s := range seats {
+		if err := l.money.Committed(s.Seat); err != nil {
+			return err
+		}
+	}
+	l.settlementTxID = ""
+	return nil
+}
+
+// PrepareNextHand advances a value table to the next hand, leaving it waiting for a pot.
+//
+// Returns false when the session should stop, matching NextHand's contract.
+func (l *LiveTable) PrepareNextHand() (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.st == nil || !l.st.Done {
+		return false, nil
+	}
+	for seat := range l.sittingOut {
+		if l.sittingOut[seat] {
+			return false, nil
+		}
+	}
+	for _, stack := range l.stacks {
+		if stack < int64(l.terms.BigBlind) {
+			return false, nil
+		}
+	}
+	l.money.SetHand(l.handIDLocked())
+	l.hole = make(map[int][]cards.Card, len(l.seats))
+	l.st = nil
+	l.readyToStart = true
+	return true, nil
 }

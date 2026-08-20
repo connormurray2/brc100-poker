@@ -39,6 +39,11 @@ type TableView struct {
 	Board   []string     `json:"board"`
 	Pot     int64        `json:"pot"`
 	ToAct   int          `json:"toAct"`
+	// ForValue reports whether hands at this table move real coins, so the UI never implies
+	// value is at stake when only chips are.
+	ForValue bool `json:"forValue"`
+	// SettlementTxID is the last completed hand's settlement, once broadcast.
+	SettlementTxID string `json:"settlementTxid,omitempty"`
 
 	// Street is the betting round, or empty before the deal.
 	Street string `json:"street,omitempty"`

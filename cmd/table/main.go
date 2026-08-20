@@ -159,10 +159,28 @@ func run() error {
 	live.SetCoordinator(coord)
 	ui.SetLive(live)
 
+	// Put real value behind each hand: an n-of-n pot the table cannot spend alone, a signed
+	// refund in every seat's hands before any stake is committed, and a settlement that needs
+	// every seat's signature. Without a funding wallet the table would only move chips, so this
+	// is what makes the non-custodial claim mean anything.
+	pots, err := webui.NewPotManager(w.Wallet, tableKey, cfg.Originator, coord, logger)
+	if err != nil {
+		return fmt.Errorf("creating the pot manager: %w", err)
+	}
+	live.SetPotManager(pots)
+
+	height := func(ctx context.Context) (uint32, error) {
+		h, err := w.Wallet.GetHeight(ctx, nil, cfg.Originator)
+		if err != nil {
+			return 0, err
+		}
+		return h.Height, nil
+	}
+
 	// A table keeps dealing until a player leaves, so the session driver runs for the life of
 	// the process. Six seconds between hands is long enough to read a showdown without making
 	// the table feel stalled.
-	go live.RunHands(ctx, 6*time.Second, logger)
+	go live.RunHands(ctx, 6*time.Second, height, logger)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/livez", reporter.LivenessHandler())
