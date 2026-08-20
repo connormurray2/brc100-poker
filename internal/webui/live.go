@@ -70,6 +70,10 @@ type LiveTable struct {
 	settlementTxID string
 	// readyToStart means every seat has committed and a value hand is waiting on its pot.
 	readyToStart bool
+	// openPotHand is the hand ID the currently funded pot belongs to. Held rather than
+	// recomputed, because handNo advances the moment a hand ends and handIDLocked would then
+	// name the next hand, not the one whose pot is still open.
+	openPotHand string
 
 	now func() time.Time
 }
@@ -754,7 +758,13 @@ func (l *LiveTable) SettleOnChain(ctx context.Context) (string, error) {
 		l.mu.Unlock()
 		return "", nil
 	}
-	handID := l.handIDLocked()
+	if l.openPotHand == "" {
+		// No pot to settle. Returning silently would leave the money unaccounted for, so say
+		// so rather than let the session continue as though it had paid out.
+		l.mu.Unlock()
+		return "", errors.New("webui: the hand finished but no pot is open for it")
+	}
+	handID := l.openPotHand
 	payouts := make(map[int]uint64, len(l.st.Payouts))
 	for seat, v := range l.st.Payouts {
 		if v > 0 {
@@ -778,6 +788,7 @@ func (l *LiveTable) SettleOnChain(ctx context.Context) (string, error) {
 
 	l.mu.Lock()
 	l.settlementTxID = txid
+	l.openPotHand = ""
 	l.money.Settled(txid, payouts)
 	l.mu.Unlock()
 	return txid, nil
@@ -825,6 +836,7 @@ func (l *LiveTable) OpenPotForHand(ctx context.Context, height uint32) error {
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
+	l.openPotHand = handID
 	l.money.SetHeight(height)
 	for _, s := range seats {
 		// Refunds exist for every seat before any stake is called committed.
@@ -878,7 +890,7 @@ func (l *LiveTable) StakeForSeat(seat int) (StakeInfo, bool) {
 		l.mu.Unlock()
 		return StakeInfo{}, false
 	}
-	handID := l.handIDLocked()
+	handID := l.openPotHand
 	seats := l.endpointsLocked()
 	// The expected payouts are only known once the hand is decided; before that a seat records
 	// the pot and the fee bound, which is what its refund protects.

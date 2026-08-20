@@ -211,3 +211,46 @@ func TestSessionHandIDChangesEveryHand(t *testing.T) {
 		t.Fatalf("three hands produced %d distinct IDs", len(seen))
 	}
 }
+
+// The pot's hand ID must survive the end of a hand.
+//
+// The regression: finishHandLocked advances handNo the moment a hand ends, to rotate the button
+// and carry stacks. Settlement then recomputed the hand ID and got the NEXT hand's, so it looked
+// for a pot under live-h1 while the funded pot was registered under live-h0 -- and a real,
+// on-chain pot was left unspent.
+func TestPotHandIDSurvivesTheEndOfAHand(t *testing.T) {
+	l, _ := sessionTable(t)
+
+	// Pretend a pot was funded for the hand now in play.
+	l.mu.Lock()
+	dealt := l.handIDLocked()
+	l.openPotHand = dealt
+	l.mu.Unlock()
+
+	// End the hand, which advances handNo.
+	l.mu.Lock()
+	toAct := l.st.ToAct
+	l.mu.Unlock()
+	var folder string
+	for k, seat := range l.seatOf {
+		if seat == toAct {
+			folder = k
+		}
+	}
+	if err := l.Act(folder, "fold", 0); err != nil {
+		t.Fatalf("fold: %v", err)
+	}
+
+	l.mu.Lock()
+	recomputed := l.handIDLocked()
+	held := l.openPotHand
+	l.mu.Unlock()
+
+	if recomputed == held {
+		t.Skip("handNo did not advance, so this regression cannot be exercised")
+	}
+	if held != dealt {
+		t.Fatalf("the pot's hand ID changed under it: funded as %q, now %q", dealt, held)
+	}
+	t.Logf("pot stays under %q while the next hand would be %q", held, recomputed)
+}
