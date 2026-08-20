@@ -424,6 +424,31 @@ func (s *Store) Handler(identityKey, version, network string) http.Handler {
 		})
 	})
 
+	// /api/armed lets a seat confirm its wallet holds the expectation for the open hand.
+	// Settlement waits for every seat, because a seat asked to sign before it has an
+	// expectation declines, and that decline is indistinguishable from a real refusal.
+	mux.HandleFunc("/api/armed", func(w http.ResponseWriter, r *http.Request) {
+		live := s.Live()
+		if live == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no playable table"})
+			return
+		}
+		var req struct {
+			IdentityKey string `json:"identityKey"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body is not valid JSON"})
+			return
+		}
+		seat := live.SeatOf(req.IdentityKey)
+		if seat < 0 {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "this identity holds no seat"})
+			return
+		}
+		live.MarkSeatArmed(seat)
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	})
+
 	mux.HandleFunc("/api/relay/poll", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			IdentityKey string `json:"identityKey"`

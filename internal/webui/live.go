@@ -758,6 +758,12 @@ func (l *LiveTable) SettleOnChain(ctx context.Context) (string, error) {
 		l.mu.Unlock()
 		return "", nil
 	}
+	if !l.pots.AllArmed(l.openPotHand, l.endpointsLocked()) {
+		// Every seat must have recorded its expectation before any is asked to sign, or the
+		// unarmed ones decline and the hand reads as stalled.
+		l.mu.Unlock()
+		return "", nil
+	}
 	if l.openPotHand == "" {
 		// No pot to settle. Returning silently would leave the money unaccounted for, so say
 		// so rather than let the session continue as though it had paid out.
@@ -912,4 +918,15 @@ func (l *LiveTable) recordStall(reason string) {
 	defer l.mu.Unlock()
 	l.stallReason = reason
 	l.readyToStart = false
+}
+
+// MarkSeatArmed records that a seat's wallet now holds its expectation for the open hand.
+func (l *LiveTable) MarkSeatArmed(seat int) {
+	l.mu.Lock()
+	hand := l.openPotHand
+	pots := l.pots
+	l.mu.Unlock()
+	if pots != nil && hand != "" {
+		pots.MarkArmed(hand, seat)
+	}
 }

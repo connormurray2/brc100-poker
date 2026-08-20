@@ -250,6 +250,8 @@ async function armWallet() {
   try {
     await callWallet('recordStake', req);
     armedHands.add(stake.handId);
+    // Tell the table, so it waits for every seat before asking anyone to sign.
+    await postJSON('/api/armed', { identityKey }).catch(() => {});
     setStatus('seatStatus',
       `Your wallet is holding a signed refund for this pot and knows what it expects to be ` +
       `paid. It will refuse any other settlement.`, 'ok');

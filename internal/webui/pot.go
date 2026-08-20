@@ -32,6 +32,9 @@ type PotManager struct {
 
 	mu   sync.Mutex
 	pots map[string]*livePot // by hand ID
+	// armed records which seats have recorded their stake for a hand, so settlement can wait
+	// for them instead of racing their browsers and being declined.
+	armed map[string]map[int]bool
 }
 
 // livePot is one hand's funded pot.
@@ -57,7 +60,8 @@ func NewPotManager(w cosign.PotFunder, tableKey *ec.PrivateKey, originator strin
 	}
 	return &PotManager{
 		wallet: w, tableKey: tableKey, originator: originator, coord: coord, log: log,
-		pots: make(map[string]*livePot),
+		pots:  make(map[string]*livePot),
+		armed: make(map[string]map[int]bool),
 	}, nil
 }
 
@@ -289,6 +293,14 @@ func (m *PotManager) StakeFor(handID string, seat int, seats []AgentEndpoint, pa
 		return StakeInfo{}, false
 	}
 
+	// Refuse to describe a stake before the hand is decided. The expectation is the set of
+	// payouts a seat will accept, and one built mid-hand names none -- so the wallet would
+	// later refuse the settlement that pays the winner. Better to have no stake recorded yet
+	// than a stake recording the wrong thing.
+	if len(payouts) == 0 {
+		return StakeInfo{}, false
+	}
+
 	info := StakeInfo{
 		HandID:       handID,
 		PotTxid:      lp.pot.Txid,
@@ -400,4 +412,30 @@ func (m *PotManager) collectRefundSignatures(ctx context.Context, handID string,
 		sigs = append(sigs, sig)
 	}
 	return sigs, nil
+}
+
+// MarkArmed records that a seat has recorded its stake for a hand.
+func (m *PotManager) MarkArmed(handID string, seat int) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.armed[handID] == nil {
+		m.armed[handID] = make(map[int]bool)
+	}
+	m.armed[handID][seat] = true
+}
+
+// AllArmed reports whether every seat has recorded its stake for a hand.
+//
+// Settlement waits on this. A seat asked to sign before it has an expectation declines, and that
+// decline reads as a stall even though nothing is wrong -- the browser simply had not polled yet.
+func (m *PotManager) AllArmed(handID string, seats []AgentEndpoint) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	got := m.armed[handID]
+	for _, s := range seats {
+		if !got[s.Seat] {
+			return false
+		}
+	}
+	return len(seats) > 0
 }

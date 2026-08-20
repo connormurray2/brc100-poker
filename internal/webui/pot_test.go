@@ -152,3 +152,57 @@ func contains(haystack, needle string) bool {
 		return false
 	})()
 }
+
+// Settlement must wait until every seat has recorded its expectation.
+//
+// The regression: the browser armed its wallet mid-hand, when the payouts were not yet known, so
+// the expectation named none. Settlement then paid the actual winner and the wallet declined --
+// correctly -- which surfaced to players as "hand stalled by a seat". The table caused it.
+func TestSettlementWaitsForEverySeatToArm(t *testing.T) {
+	tk, err := ec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pm, err := NewPotManager(nil, tk, "t.local", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seats := []AgentEndpoint{{Seat: 0, IdentityKey: "02aa"}, {Seat: 1, IdentityKey: "03bb"}}
+
+	if pm.AllArmed("h1", seats) {
+		t.Fatal("reported all seats armed before any had")
+	}
+	pm.MarkArmed("h1", 0)
+	if pm.AllArmed("h1", seats) {
+		t.Fatal("reported all seats armed with only seat 0 armed")
+	}
+	pm.MarkArmed("h1", 1)
+	if !pm.AllArmed("h1", seats) {
+		t.Fatal("both seats armed but not reported so")
+	}
+	// A different hand must not inherit it.
+	if pm.AllArmed("h2", seats) {
+		t.Fatal("arming for one hand counted for another")
+	}
+}
+
+// A stake must not be described before the hand is decided: an expectation naming no payouts
+// would make the wallet refuse the settlement that pays the winner.
+func TestStakeIsNotOfferedBeforeTheHandIsDecided(t *testing.T) {
+	tk, err := ec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pm, err := NewPotManager(nil, tk, "t.local", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Register a pot directly; no payouts are known yet.
+	pm.mu.Lock()
+	pm.pots["h1"] = &livePot{}
+	pm.mu.Unlock()
+
+	if _, ok := pm.StakeFor("h1", 0, []AgentEndpoint{{Seat: 0, IdentityKey: "02aa"}}, nil); ok {
+		t.Fatal("a stake was offered with no payouts known")
+	}
+}
