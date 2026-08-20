@@ -699,13 +699,37 @@ func (l *LiveTable) RunHands(ctx context.Context, settle time.Duration, heightFn
 		// means a pot is never left open while a new hand's pot is funded, which would leave
 		// two live pots and no way for a player to tell which refund protects which stake.
 		if l.ForValue() {
-			if txid, err := l.SettleOnChain(ctx); err != nil {
+			// Seats arm from their browsers, so allow time for that before treating a
+			// missing expectation as a failure. Bounded, because a player who closed their
+			// tab would otherwise hold the table open indefinitely.
+			var txid string
+			var err error
+			deadline := time.Now().Add(45 * time.Second)
+			for {
+				txid, err = l.SettleOnChain(ctx)
+				if !errors.Is(err, ErrAwaitingSeats) {
+					break
+				}
+				if time.Now().After(deadline) {
+					err = errors.New("webui: a seat never recorded its stake; its browser " +
+						"may have been closed. Every seat still holds a refund")
+					break
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case <-time.After(time.Second):
+				}
+			}
+			if err != nil {
 				if log != nil {
 					log.Error("the hand could not be settled on chain; the session stops here",
 						"error", err)
 				}
+				l.recordStall(err.Error())
 				return
-			} else if txid != "" && log != nil {
+			}
+			if txid != "" && log != nil {
 				log.Info("hand settled on chain", "txid", txid)
 			}
 		}
@@ -744,6 +768,12 @@ func (l *LiveTable) RunHands(ctx context.Context, settle time.Duration, heightFn
 	}
 }
 
+// ErrAwaitingSeats means a settlement is ready but not every seat has recorded its expectation.
+//
+// A distinct error rather than a silent nil: returning nil made the caller treat an unsettled hand
+// as a settled one, so the session stopped both settling and dealing without saying why.
+var ErrAwaitingSeats = errors.New("webui: waiting for every seat to record its stake")
+
 // SettleOnChain spends the pot to the winners of the completed hand.
 //
 // Driven from outside the table lock: it collects a signature from every seat, which is a round
@@ -760,9 +790,10 @@ func (l *LiveTable) SettleOnChain(ctx context.Context) (string, error) {
 	}
 	if !l.pots.AllArmed(l.openPotHand, l.endpointsLocked()) {
 		// Every seat must have recorded its expectation before any is asked to sign, or the
-		// unarmed ones decline and the hand reads as stalled.
+		// unarmed ones decline and the hand reads as stalled. Distinguished from a settled
+		// hand by ErrAwaitingSeats, so the caller waits rather than moving on.
 		l.mu.Unlock()
-		return "", nil
+		return "", ErrAwaitingSeats
 	}
 	if l.openPotHand == "" {
 		// No pot to settle. Returning silently would leave the money unaccounted for, so say
