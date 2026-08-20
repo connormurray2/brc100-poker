@@ -127,9 +127,16 @@ el('connect').addEventListener('click', async () => {
 
 el('join').addEventListener('click', async () => {
   try {
-    const { seat } = await postJSON('/api/join', { identityKey });
+    // A seat that runs its own BRC-100 wallet process registers it here. That is what makes the
+    // deal dealerless: the table can sequence a deal through the wallet without ever being able
+    // to read a card. Blank means the server shuffles, which the table reports rather than hides.
+    const agentUrl = el('agentUrl').value.trim();
+    const { seat, agentRegistered } = await postJSON('/api/join', { identityKey, agentUrl });
     mySeat = seat;
-    setStatus('seatStatus', `You are seat ${seat}. Commit your buy-in when ready.`, 'ok');
+    const how = agentRegistered
+      ? 'Your wallet is registered, so your cards will be dealt dealerlessly.'
+      : 'No wallet address given, so the server will shuffle and can see the cards.';
+    setStatus('seatStatus', `You are seat ${seat}. ${how} Commit your buy-in when ready.`, 'ok');
     await refresh();
   } catch (e) {
     setStatus('seatStatus', e.message, 'bad');

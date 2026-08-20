@@ -41,9 +41,16 @@
   <section class="panel" id="seatPanel" hidden>
     <h2>2 · Take a seat</h2>
     <div class="controls">
+      <label for="agentUrl">Your wallet's address (optional)</label>
+      <input id="agentUrl" type="text" placeholder="http://127.0.0.1:8091" size="24">
       <button id="join" class="primary">Join the table</button>
       <button id="ready">I'm ready (commit buy-in)</button>
     </div>
+    <p class="hint">
+      Running your own BRC-100 wallet process? Give its address and your cards are dealt
+      dealerlessly &mdash; nothing, including this server, can read them. Leave it blank and the
+      server shuffles instead, which it will say plainly on the table.
+    </p>
     <div id="seatStatus" class="status"></div>
   </section>
 

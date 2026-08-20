@@ -260,3 +260,23 @@ func hexRepeat(n int) string {
 	}
 	return string(out)
 }
+
+// A browser player who runs no wallet process sends an empty agentUrl. That must join cleanly and
+// simply not register an agent, rather than being rejected as a malformed registration.
+func TestRegisterAgentRejectsEmptyURL(t *testing.T) {
+	l, err := NewLiveTable(table.Terms{
+		TableID: "t", BuyInSatoshis: 5000, SmallBlind: 25, BigBlind: 50,
+		Seats: 2, RefundLockHeight: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := "02" + "1111111111111111111111111111111111111111111111111111111111111111"
+	if _, err := l.Join(key); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	// The API skips registration entirely for an empty URL, so the seat stays server-dealt.
+	if err := l.RegisterAgent(key, ""); err == nil {
+		t.Fatal("registering an empty agent URL should fail; the API must skip the call instead")
+	}
+}
