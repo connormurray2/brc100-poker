@@ -114,9 +114,11 @@ func (m *PotManager) OpenPot(ctx context.Context, handID string, seats []AgentEn
 	// refusing to sign the settlement: refusing turns the pot into a race it can win, while
 	// signing pays it nothing. A rational loser therefore never settles.
 	//
-	// The fix is one refund paying every seat its own stake back, rather than one refund per
-	// seat paying that seat everything. Then refusing costs a loser its stake instead of
-	// winning it the pot.
+	// Paying each seat its own stake back instead would remove the race and the windfall, but
+	// it does NOT make signing rational: a loser who signs gets nothing, and any refund paying
+	// them anything beats that. A single-hand pot with a timelocked refund cannot be
+	// incentive-compatible; the fix is a session-spanning pot, so refusing forfeits a whole
+	// stack rather than one lost hand.
 	for i, s := range seats {
 		refund, err := cosign.BuildRefund(cosign.RefundArgs{
 			Pot: pot, Recipient: pubs[i], Satoshis: satoshis - 300, LockHeight: lockHeight,

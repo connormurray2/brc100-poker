@@ -1,102 +1,115 @@
 # The refund incentive flaw
 
-**Status: known, unfixed, and it makes real-value play unsafe.** Found by a player asking the
-obvious question during a test session on 2026-08-20.
+**Status: known, unfixed, and structural.** Real-value play is not safe with an opponent who would
+exploit it. Found by a player asking the obvious question during a test session on 2026-08-20.
 
 ---
 
-## The question
+## 1. When does a player actually sign?
 
-> What if I don't approve after I've already lost the hand?
+Twice per hand, and knowing which is which is necessary to follow the rest.
 
----
+| # | When | What is signed | Who signs |
+| --- | --- | --- | --- |
+| 1 | At buy-in, **before any cards** | Every seat's refund | every seat |
+| 2 | After the showdown | The settlement paying the winner | every seat |
 
-## The answer, and why it is worse than it sounds
+Signature 1 is why `signRefund` exists and why it deliberately requires no recorded stake: the
+stake cannot be recorded until its refund exists. Signature 2 is the one gated on the player's own
+expectation of the payout.
 
-A losing seat is strictly better off refusing to sign the settlement.
+So committing a buy-in already collected signatures. The prompt that appears at the *end* of a hand
+is signature 2.
 
-Each seat holds a fully-signed refund that returns **the whole pot** to that seat, timelocked. The
-refunds all spend the same outpoint, so only one can ever be mined. The design assumed the
-settlement always wins that race because it has no timelock, which is true — *if the settlement is
-ever broadcast.*
+## 2. What a refund is, and what it is not
 
-It is only broadcast if every seat signs. So:
+A refund spends the pot and is **timelocked** — 144 blocks past the hand, roughly a day on
+teratestnet. It exists for liveness: if a seat disappears mid-hand, everyone else's money must not
+be trapped forever.
 
-| | Signs the settlement | Refuses |
-| --- | --- | --- |
-| Loser's outcome | receives 0 | pot becomes a race they can win |
+It is not an escape hatch a player can pull at will *during* a hand. It matures long after.
 
-Concretely, with a 5,000 satoshi buy-in each and a 10,000 satoshi pot:
+**Folding is a different thing entirely, and I previously conflated the two.** Folding is an action
+inside a hand. The pot is already funded on chain with both buy-ins, so folding does not return your
+stake — it gives up your claim on the pot, and the settlement then pays the whole pot to the other
+seat. A folding player receives **0**, exactly like a player who loses at showdown.
 
-- Loser signs: they get **0**.
-- Loser refuses: nothing settles. At the refund locktime, whoever broadcasts first takes
-  **9,700** — and both seats hold an equivalent refund, so it is a first-broadcast race.
+## 3. The flaw
 
-**Refusing is never worse than signing, and is usually much better.** A rational player never
-signs a losing settlement, which means real-value hands cannot complete.
+At showdown, a losing seat compares:
 
-This also disposes of `-max-pot` as a safety mechanism, which is what the player was actually
-pointing out: bounding the pot a wallet will sign for does nothing, because the attack is not
-signing something too large — it is **declining something legitimate**.
+| Action | Outcome |
+| --- | --- |
+| Sign the settlement | **0**. The winner takes the pot. |
+| Refuse | Nothing settles. At the refund locktime, the pot is a first-broadcast race — and both seats hold a refund paying the **whole pot**, so up to **9,700** of a 10,000 pot. |
 
----
+Refusing is never worse than signing and usually much better, so a rational loser never signs. Real
+value hands therefore cannot complete against an opponent who understands this.
 
-## Why the refund design is wrong
+### This is why `-max-pot` is not a fix
 
-The refund exists to answer a real problem: a seat that disappears must not trap everyone's money.
-Paying the whole pot to a single seat solves liveness and creates this incentive at the same time.
+`-max-pot` bounds the largest pot a wallet will sign for unattended. It is irrelevant here. The
+attack is not signing something too large — it is **declining something legitimate**. No care in the
+approver addresses it, because the approver's job is to say no, and saying no is the attack.
 
-A refund should restore the **status quo before the hand**, not hand one player the pot. Each seat
-put in its buy-in; a refund should return each seat exactly that.
+## 4. Why the obvious fix does not work either
 
----
-
-## The fix
-
-**One refund transaction paying every seat its own stake back**, rather than one refund per seat
-paying that seat everything.
+My first proposal was to make the refund return each seat its own stake instead of the whole pot:
 
 ```
-pot 10000  =  seat 0 buy-in 5000  +  seat 1 buy-in 5000
+now:    refund_0 -> 9700 to seat 0      (either seat can take everything)
+        refund_1 -> 9700 to seat 1
 
-current: refund_0 -> 9700 to seat 0        (either seat can take everything)
-         refund_1 -> 9700 to seat 1
-
-fixed:   refund   -> 4850 to seat 0
-                     4850 to seat 1        (nobody gains by stalling)
+stake:  refund   -> 4850 to seat 0
+                    4850 to seat 1      (one transaction, no race)
 ```
 
-Then refusing to settle costs a losing seat its stake rather than winning it the pot. The refund
-becomes what it was meant to be: a way out that nobody prefers.
+That removes the race and the windfall, and it is a genuine improvement. **It does not make signing
+rational.** A loser who signs still gets 0, and 4,850 beats 0. The incentive to stall survives, just
+smaller.
 
-Properties this restores:
+The general statement: a losing seat receives nothing from the settlement, so **any** refund paying
+them anything at all is preferable to signing. For signing to be rational the refund would have to
+pay a loser less than the settlement does — that is, zero — at which point it is not a refund and
+liveness is gone.
 
-- **Liveness.** A vanished seat still cannot trap funds; the refund matures and pays everyone.
-- **Incentive compatibility.** A loser gains nothing by refusing, so settlement is the rational
-  move. A winner still prefers settling, because the refund pays them only their stake rather than
-  their winnings.
-- **No race.** One refund, one outcome, so it does not matter who broadcasts it.
+**A single-hand n-of-n pot with a timelocked refund cannot be incentive-compatible.** The loser
+always holds a free option to stall. This is a structural property, not a parameter to tune.
 
-### Work involved
+## 5. What would actually work
 
-- `cosign.BuildRefund` takes a set of recipients and amounts, not one recipient
-- `PotManager.OpenPot` builds and collects signatures for one refund rather than N
-- The agent's `signRefund` check becomes: every seat is paid its own stake, not one named
-  beneficiary is paid the pot
-- `RefundFor`/`StakeInfo` return the single shared refund
-- Tests: a losing seat gains nothing by refusing; the refund pays every seat its stake; the
-  settlement still beats the refund when everyone cooperates
+**Session-spanning pots.** Buy in once for many hands, as an online poker site does. Refusing to
+settle then forfeits the whole remaining stack and every future hand, not just the hand already
+lost. The refund still guarantees liveness, but exercising it costs the refuser their session.
 
-### Not fixed by
+This is the direction with the best cost/benefit, and it fits the game: nobody expects to settle
+on chain after every hand anyway. It requires the pot to be a running balance that settles when a
+player leaves, rather than one pot per hand.
 
-Punishing a refusal. There is nothing to punish with: the stake is already in the pot and the
-protocol has no way to burn it or award it, since any such transaction would itself need the
-refusing seat's signature.
+**Other directions, weaker:**
+
+- *Escalating stakes*: the timelock delay costs the refuser interest. Real but far too small to
+  matter at these amounts.
+- *A bond outside the pot*: forfeitable on a stall. Needs a party to adjudicate, which reintroduces
+  trust.
+- *Reputation*: works for a known group, not for strangers, which is the case that matters.
+
+**What cannot work:** punishing a refusal within the protocol. The stake is already in the pot and
+any transaction moving it needs the refusing seat's signature. There is nothing to punish with.
+
+## 6. Until it is fixed
+
+Everything else works and is tested: the dealerless deal, hole-card privacy, the browser relay, the
+n-of-n pot, per-seat settlement signing. The money layer's *incentives* are what is unfinished.
+
+Play for chips, or with people you would lend money to.
 
 ---
 
-## Until it is fixed
+## Appendix: a correction
 
-Real-value play is unsafe with untrusted opponents. The mental poker, the relay, the deal privacy
-and the settlement machinery all work; the money layer's incentives do not. Play for chips, or
-with people you would lend money to.
+An earlier version of this document said a refusing loser would get "4,850 instead of the 5,000
+they'd have kept by folding". Both halves were wrong. Folding does not return a stake — the pot is
+already funded, so a folder receives 0 like any loser. And 4,850 does not deter anything, because
+the alternative is 0. Writing the arithmetic out is what surfaced that the stake-back refund is an
+improvement rather than a fix.
