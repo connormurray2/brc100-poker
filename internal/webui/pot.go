@@ -107,9 +107,16 @@ func (m *PotManager) OpenPot(ctx context.Context, handID string, seats []AgentEn
 	lockHeight := currentHeight + 144
 	lp := &livePot{pot: pot, seats: pubs, refunds: make(map[int]*transaction.Transaction), lockHeight: lockHeight}
 
-	// Each seat's refund returns the whole pot to that seat. Only one can ever be broadcast,
-	// because they all spend the same outpoint, and the settlement spends it first when the
-	// hand completes normally.
+	// KNOWN FLAW -- see docs/refund-incentive-flaw.md before relying on this for value.
+	//
+	// Each seat's refund returns the whole pot to that seat. That guarantees liveness -- a
+	// vanished seat cannot trap anyone's money -- but it also means a LOSING seat is better off
+	// refusing to sign the settlement: refusing turns the pot into a race it can win, while
+	// signing pays it nothing. A rational loser therefore never settles.
+	//
+	// The fix is one refund paying every seat its own stake back, rather than one refund per
+	// seat paying that seat everything. Then refusing costs a loser its stake instead of
+	// winning it the pot.
 	for i, s := range seats {
 		refund, err := cosign.BuildRefund(cosign.RefundArgs{
 			Pot: pot, Recipient: pubs[i], Satoshis: satoshis - 300, LockHeight: lockHeight,
