@@ -568,6 +568,9 @@ func (m *PotManager) ApplyHand(ctx context.Context, sessionID string, seats []Ag
 
 	m.mu.Lock()
 	lp.balances = balances
+	// Arming is per state, not per session. A seat armed for the previous balances has an
+	// expectation the settlement will not match, so clearing this forces it to re-arm.
+	delete(m.armed, sessionID)
 	m.mu.Unlock()
 	return m.resignRefund(ctx, sessionID, lp, seats, next)
 }

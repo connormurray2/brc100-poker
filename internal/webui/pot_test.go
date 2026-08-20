@@ -294,3 +294,86 @@ func TestRefusingToSignNeverPaysAcrossASession(t *testing.T) {
 		t.Fatal("the old design's payoff should have exceeded the losing balance; the comparison is wrong")
 	}
 }
+
+// A seat's expectation must describe the SETTLEMENT, and a session pot settles balances -- not the
+// last hand's payouts.
+//
+// The bug players hit at cash-out: StakeForSeat described a hand payout of 4000 while the
+// settlement paid the seat its 6975 session balance, so the wallet correctly refused with
+// "receives 5775, expected 2800" (both figures net of the 1200 fee).
+func TestStakeDescribesSessionBalancesNotHandPayouts(t *testing.T) {
+	tk, err := ec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pm, err := NewPotManager(nil, tk, "t.local", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, _ := ec.NewPrivateKey()
+	b, _ := ec.NewPrivateKey()
+	lock, err := cosign.PotScript([]*ec.PublicKey{a.PubKey(), b.PubKey()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	pm.mu.Lock()
+	pm.pots["s"] = &livePot{
+		pot:      cosign.FundedPot{Txid: "dd", Vout: 0, Script: lock, Satoshis: 10000},
+		seats:    []*ec.PublicKey{a.PubKey(), b.PubKey()},
+		balances: map[int]uint64{0: 3025, 1: 6975},
+	}
+	pm.mu.Unlock()
+
+	seats := []AgentEndpoint{
+		{Seat: 0, IdentityKey: a.PubKey().ToDERHex()},
+		{Seat: 1, IdentityKey: b.PubKey().ToDERHex()},
+	}
+	balances, ok := pm.Balances("s")
+	if !ok {
+		t.Fatal("no balances for the session")
+	}
+	info, ok := pm.StakeFor("s", 1, seats, balances)
+	if !ok {
+		t.Fatal("no stake described for an open session")
+	}
+
+	// The amounts must be the balances less the reserved fee, matching what Settle pays.
+	want := map[string]uint64{
+		a.PubKey().ToDERHex(): 3025,
+		b.PubKey().ToDERHex(): 6975 - settlementFee,
+	}
+	if len(info.Payouts) != 2 {
+		t.Fatalf("described %d payouts, want one per seat", len(info.Payouts))
+	}
+	for _, p := range info.Payouts {
+		if want[p.RecipientKey] != p.Satoshis {
+			t.Fatalf("seat with key %s… is told %d, want %d",
+				p.RecipientKey[:12], p.Satoshis, want[p.RecipientKey])
+		}
+	}
+}
+
+// Arming is per state. A seat armed for the previous balances holds an expectation the settlement
+// cannot match, so moving the balances must clear it.
+func TestArmingIsClearedWhenBalancesMove(t *testing.T) {
+	tk, _ := ec.NewPrivateKey()
+	pm, err := NewPotManager(nil, tk, "t.local", nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seats := []AgentEndpoint{{Seat: 0, IdentityKey: "02aa"}, {Seat: 1, IdentityKey: "03bb"}}
+	pm.MarkArmed("s", 0)
+	pm.MarkArmed("s", 1)
+	if !pm.AllArmed("s", seats) {
+		t.Fatal("both seats armed but not reported so")
+	}
+
+	// Simulate the balance move ApplyHand performs.
+	pm.mu.Lock()
+	delete(pm.armed, "s")
+	pm.mu.Unlock()
+
+	if pm.AllArmed("s", seats) {
+		t.Fatal("seats still count as armed after the balances moved")
+	}
+}

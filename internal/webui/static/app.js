@@ -219,7 +219,15 @@ function startRelay() {
 // -- a stake the table wrote would encode the table's expectation, which would make the wallet's
 // signing check a rubber stamp. So the page asks the table for the amounts and derivation
 // material, and the wallet derives the payout scripts itself.
-const armedHands = new Set();
+let armedFor = '';
+
+// A fingerprint of the state the wallet was last armed for. The session ID cannot serve here: it
+// is stable for the whole session while the balances change every hand, so keying on it armed the
+// wallet once with the opening split and left it refusing the settlement that paid its real
+// balance.
+function stakeFingerprint(stake) {
+  return [stake.handId, ...(stake.payouts || []).map(p => `${p.recipientKey}:${p.satoshis}`)].join('|');
+}
 
 async function armWallet() {
   if (!identityKey || !agentBase) return;
@@ -231,9 +239,9 @@ async function armWallet() {
   }
   if (!info.open || !info.stake || !info.refundTxHex) return;
   const stake = info.stake;
-  // Only once per hand: the wallet would accept a re-record, but there is nothing to gain and
-  // a repeated call on every poll is noise.
-  if (armedHands.has(stake.handId)) return;
+  // Re-arm whenever the balances change, and not otherwise.
+  const fingerprint = stakeFingerprint(stake);
+  if (armedFor === fingerprint) return;
   if (!stake.payouts || !stake.payouts.length) return;
 
   const req = {
@@ -250,7 +258,7 @@ async function armWallet() {
   };
   try {
     await callWallet('recordStake', req);
-    armedHands.add(stake.handId);
+    armedFor = fingerprint;
     // Tell the table, so it waits for every seat before asking anyone to sign.
     await postJSON('/api/armed', { identityKey }).catch(() => {});
     setStatus('seatStatus',

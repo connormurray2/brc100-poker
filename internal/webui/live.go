@@ -927,18 +927,17 @@ func (l *LiveTable) StakeForSeat(seat int) (StakeInfo, bool) {
 	}
 	handID := l.openPotHand
 	seats := l.endpointsLocked()
-	// The expected payouts are only known once the hand is decided; before that a seat records
-	// the pot and the fee bound, which is what its refund protects.
-	payouts := make(map[int]uint64)
-	if l.st.Done {
-		for s, v := range l.st.Payouts {
-			if v > 0 {
-				payouts[s] = uint64(v)
-			}
-		}
-	}
 	l.mu.Unlock()
-	return l.pots.StakeFor(handID, seat, seats, payouts)
+
+	// A seat's expectation must describe what the SETTLEMENT will pay, and a session pot settles
+	// the session balances -- not the last hand's payouts. Describing a hand payout here was the
+	// mismatch that stalled cash-out: a seat armed with a 4000 hand win, then refused a
+	// settlement paying it its 6975 session balance.
+	balances, ok := l.pots.Balances(handID)
+	if !ok {
+		return StakeInfo{}, false
+	}
+	return l.pots.StakeFor(handID, seat, seats, balances)
 }
 
 // recordStall makes a stopped session visible to the players.
