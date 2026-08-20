@@ -202,9 +202,75 @@ async function relayOnce() {
 
 function startRelay() {
   if (relayTimer) return;
+  // Arming rides the same timer: a pot appears between hands, and the wallet must know about it
+  // before the table asks for a settlement signature.
+  setInterval(armWallet, 1200);
   // 400ms is short enough that a deal -- a few dozen round trips -- completes promptly, and long
   // enough that an idle table is not being hammered.
   relayTimer = setInterval(relayOnce, 400);
+}
+
+
+// --- arming the wallet ----------------------------------------------------
+//
+// Before a settlement can be signed, this seat's own wallet must record what it expects: which pot
+// its stake is in, what it should be paid, and what fee it will tolerate. The table cannot do this
+// -- a stake the table wrote would encode the table's expectation, which would make the wallet's
+// signing check a rubber stamp. So the page asks the table for the amounts and derivation
+// material, and the wallet derives the payout scripts itself.
+const armedHands = new Set();
+
+async function armWallet() {
+  if (!identityKey || !agentBase) return;
+  let info;
+  try {
+    info = await postJSON('/api/stake', { identityKey });
+  } catch {
+    return;
+  }
+  if (!info.open || !info.stake || !info.refundTxHex) return;
+  const stake = info.stake;
+  // Only once per hand: the wallet would accept a re-record, but there is nothing to gain and
+  // a repeated call on every poll is noise.
+  if (armedHands.has(stake.handId)) return;
+  if (!stake.payouts || !stake.payouts.length) return;
+
+  const req = {
+    handId: stake.handId,
+    potTxid: stake.potTxid,
+    potVout: stake.potVout,
+    potSatoshis: stake.potSatoshis,
+    potScriptHex: stake.potScriptHex,
+    seat: info.seat,
+    senderIdentityKey: stake.senderIdentityKey,
+    payouts: stake.payouts,
+    maxFee: stake.maxFee,
+    refundTxHex: info.refundTxHex,
+  };
+  try {
+    await callWallet('recordStake', req);
+    armedHands.add(stake.handId);
+    setStatus('seatStatus',
+      `Your wallet is holding a signed refund for this pot and knows what it expects to be ` +
+      `paid. It will refuse any other settlement.`, 'ok');
+  } catch (e) {
+    setStatus('seatStatus', `Your wallet would not record this stake: ${e.message}`, 'bad');
+  }
+}
+
+// callWallet makes an authenticated substrate call from this page to the local wallet.
+//
+// The page cannot sign as the wallet's owner, so this relies on the wallet trusting requests from
+// an allowed origin for owner-only methods. That is the same trust boundary as the funding button.
+async function callWallet(method, params) {
+  const res = await fetch(`${agentBase}/owner/${method}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify(params),
+  });
+  const body = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(body.error || `HTTP ${res.status}`);
+  return body;
 }
 
 el('copyCommand').addEventListener('click', async () => {

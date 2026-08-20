@@ -863,3 +863,29 @@ func (l *LiveTable) PrepareNextHand() (bool, error) {
 	l.readyToStart = true
 	return true, nil
 }
+
+// StakeForSeat describes the open pot for one seat, so its client can arm its own wallet.
+//
+// Returns the amounts and derivation material only. The wallet derives the scripts, which is why a
+// table cannot use this to make a seat expect the wrong payout.
+func (l *LiveTable) StakeForSeat(seat int) (StakeInfo, bool) {
+	l.mu.Lock()
+	if l.pots == nil || !l.pots.Enabled() || l.st == nil {
+		l.mu.Unlock()
+		return StakeInfo{}, false
+	}
+	handID := l.handIDLocked()
+	seats := l.endpointsLocked()
+	// The expected payouts are only known once the hand is decided; before that a seat records
+	// the pot and the fee bound, which is what its refund protects.
+	payouts := make(map[int]uint64)
+	if l.st.Done {
+		for s, v := range l.st.Payouts {
+			if v > 0 {
+				payouts[s] = uint64(v)
+			}
+		}
+	}
+	l.mu.Unlock()
+	return l.pots.StakeFor(handID, seat, seats, payouts)
+}

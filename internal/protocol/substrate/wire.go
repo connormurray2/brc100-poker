@@ -66,6 +66,14 @@ const (
 	// MethodDealCard asks a seat's own agent to identify a card it can read.
 	MethodDealCard Method = "dealCard"
 
+	// MethodRecordStake tells a wallet which pot its stake went into, so it can verify a
+	// later settlement against its own record rather than the table's word.
+	//
+	// The wallet derives the expected payout scripts itself from the sender's public key and
+	// its own private key, so the caller supplies amounts and derivation material but never
+	// the scripts. A caller that could name the scripts could name itself as the payee.
+	MethodRecordStake Method = "recordStake"
+
 	// MethodSignPot signs one input of a pot transaction. Not a BRC-100 method: it is
 	// this application's co-signing primitive, and it is the only method that produces a
 	// signature over money the caller proposed.
@@ -77,6 +85,7 @@ func (m Method) Known() bool {
 	switch m {
 	case MethodGetPublicKey, MethodGetNetwork, MethodCreateAction, MethodSignAction,
 		MethodInternalizeAction, MethodListOutputs, MethodListActions, MethodSignPot,
+		MethodRecordStake,
 		MethodDealCommit, MethodDealShuffle, MethodDealRemask, MethodDealReveal,
 		MethodDealFinal, MethodDealCard:
 		return true
@@ -303,6 +312,7 @@ func TableGrants() Grants {
 func OwnerGrants() Grants {
 	g, err := NewGrants(MethodGetPublicKey, MethodGetNetwork, MethodCreateAction,
 		MethodSignAction, MethodInternalizeAction, MethodListOutputs, MethodListActions, MethodSignPot,
+		MethodRecordStake,
 		MethodDealCommit, MethodDealShuffle, MethodDealRemask, MethodDealReveal,
 		MethodDealFinal, MethodDealCard)
 	if err != nil {

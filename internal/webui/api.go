@@ -392,6 +392,38 @@ func (s *Store) Handler(identityKey, version, network string) http.Handler {
 		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 	})
 
+	// /api/stake tells a seat what pot its stake is in, so its own client can record it with
+	// its own wallet. The response carries amounts and derivation material, never scripts:
+	// the wallet derives those, so this cannot be used to make a seat expect a wrong payout.
+	mux.HandleFunc("/api/stake", func(w http.ResponseWriter, r *http.Request) {
+		live := s.Live()
+		if live == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no playable table"})
+			return
+		}
+		var req struct {
+			IdentityKey string `json:"identityKey"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body is not valid JSON"})
+			return
+		}
+		seat := live.SeatOf(req.IdentityKey)
+		if seat < 0 {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": "this identity holds no seat"})
+			return
+		}
+		info, ok := live.StakeForSeat(seat)
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]any{"open": false})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{
+			"open": true, "stake": info, "seat": seat,
+			"refundTxHex": info.Refunds[seat],
+		})
+	})
+
 	mux.HandleFunc("/api/relay/poll", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			IdentityKey string `json:"identityKey"`

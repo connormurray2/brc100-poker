@@ -2,6 +2,7 @@ package webui
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -252,6 +253,68 @@ func (m *PotManager) collectSignatures(ctx context.Context, handID string, tx *t
 		sigs = append(sigs, sig)
 	}
 	return sigs, nil
+}
+
+// StakeInfo is what a seat's client needs to arm its own wallet for a hand.
+//
+// Amounts and derivation material only. The scripts are deliberately absent: the wallet derives
+// them itself, so a table that lied here would produce a settlement the seat refuses.
+type StakeInfo struct {
+	HandID       string            `json:"handId"`
+	PotTxid      string            `json:"potTxid"`
+	PotVout      uint32            `json:"potVout"`
+	PotSatoshis  uint64            `json:"potSatoshis"`
+	PotScriptHex string            `json:"potScriptHex"`
+	SenderKey    string            `json:"senderIdentityKey"`
+	MaxFee       uint64            `json:"maxFee"`
+	Payouts      []StakeInfoPayout `json:"payouts"`
+	Refunds      map[int]string    `json:"-"`
+}
+
+// StakeInfoPayout is one expected payout, as amounts and derivation material.
+type StakeInfoPayout struct {
+	RecipientKey string `json:"recipientKey"`
+	Satoshis     uint64 `json:"satoshis"`
+	Prefix       string `json:"prefix"`
+	Suffix       string `json:"suffix"`
+}
+
+// StakeFor describes a hand's pot for one seat, including that seat's own refund.
+func (m *PotManager) StakeFor(handID string, seat int, seats []AgentEndpoint, payouts map[int]uint64) (StakeInfo, bool) {
+	m.mu.Lock()
+	lp, ok := m.pots[handID]
+	m.mu.Unlock()
+	if !ok {
+		return StakeInfo{}, false
+	}
+
+	info := StakeInfo{
+		HandID:       handID,
+		PotTxid:      lp.pot.Txid,
+		PotVout:      lp.pot.Vout,
+		PotSatoshis:  lp.pot.Satoshis,
+		PotScriptHex: hex.EncodeToString(*lp.pot.Script),
+		SenderKey:    m.tableKey.PubKey().ToDERHex(),
+		// A settlement may not burn more than this. Bounding the fee is what stops a
+		// proposal paying a token amount and consuming the rest.
+		MaxFee: 1000,
+	}
+	for _, s := range seats {
+		amount, won := payouts[s.Seat]
+		if !won || amount == 0 {
+			continue
+		}
+		info.Payouts = append(info.Payouts, StakeInfoPayout{
+			RecipientKey: s.IdentityKey,
+			Satoshis:     amount,
+			Prefix:       base64.StdEncoding.EncodeToString([]byte(handID)),
+			Suffix:       base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("seat-%d", s.Seat))),
+		})
+	}
+	if tx, ok := lp.refunds[seat]; ok {
+		info.Refunds = map[int]string{seat: hex.EncodeToString(tx.Bytes())}
+	}
+	return info, true
 }
 
 // RefundFor returns a seat's signed refund, so a player can be handed the transaction that

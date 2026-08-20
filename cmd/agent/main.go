@@ -12,6 +12,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"net/http"
 	"os"
@@ -153,6 +154,10 @@ func run() error {
 	mux.HandleFunc("/identity", identityHandler(a, w, allowed))
 	// Funding from the page, so a player never has to stop the agent to claim coins.
 	mux.HandleFunc("/faucet", faucetHandler(w, *originator, allowed, logger))
+	// Owner-only methods, reachable from an allowed origin without a substrate signature: the
+	// page is the player's own client and cannot sign as them. Origin is the trust boundary
+	// here, the same one the faucet button relies on, and only loopback is served by default.
+	mux.HandleFunc("/owner/recordStake", ownerHandler(a, allowed, logger))
 
 	srv := &http.Server{
 		Addr:              *listen,
@@ -330,4 +335,57 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
+}
+
+// ownerHandler serves an owner-only method to the player's own page.
+//
+// The page is the player's client, not a third party, and it cannot produce a substrate signature
+// as the owner. Origin is therefore the boundary, and the agent listens on loopback by default so
+// nothing off-machine can reach it at all.
+//
+// Only recordStake is exposed this way, and deliberately: it arms the wallet with the player's own
+// expectation of a settlement. It moves no money and grants nothing -- a wrong expectation makes
+// the wallet refuse to sign, never sign something worse.
+func ownerHandler(a *agent.Agent, allowed []string, logger *slog.Logger) http.HandlerFunc {
+	permitted := make(map[string]struct{}, len(allowed))
+	for _, o := range allowed {
+		permitted[strings.ToLower(o)] = struct{}{}
+	}
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		if origin != "" {
+			if _, ok := permitted[strings.ToLower(origin)]; !ok {
+				http.Error(w, "origin not allowed", http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Headers", "content-type")
+			w.Header().Set("Access-Control-Allow-Methods", "POST, OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "use POST", http.StatusMethodNotAllowed)
+			return
+		}
+
+		body, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
+		if err != nil {
+			http.Error(w, "could not read the body", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("content-type", "application/json")
+		res, err := a.RecordStakeJSON(body)
+		if err != nil {
+			logger.Warn("recordStake refused", "error", err)
+			w.WriteHeader(http.StatusBadRequest)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(res)
+	}
 }

@@ -233,6 +233,11 @@ func (a *Agent) registerHandlers() error {
 	if err := a.server.HandleMethod(substrate.MethodSignPot, a.handleSignPot); err != nil {
 		return err
 	}
+	// Owner-only by grant: a stake the table could write would make the signing gate a rubber
+	// stamp, because the expectation it checks against would be the table's.
+	if err := a.server.HandleMethod(substrate.MethodRecordStake, a.handleRecordStake); err != nil {
+		return err
+	}
 	if err := a.server.HandleMethod(substrate.MethodInternalizeAction, a.handleInternalize); err != nil {
 		return err
 	}
