@@ -160,6 +160,13 @@ func (m *PotManager) Settle(ctx context.Context, handID string, seats []AgentEnd
 	}
 
 	// One payout per winning seat, each derived so only that seat can spend it.
+	// Reserve the fee before deriving anything. The engine's payouts sum to the whole pot, so
+	// paying them in full would leave the funding wallet to conjure a fee -- which it does by
+	// emitting change back to itself, an output no seat declared and every seat then refuses.
+	// Taking the fee off the top means the outputs sum to exactly the pot less the fee, and no
+	// change output is created.
+	payouts = reserveFee(payouts, settlementFee)
+
 	list := make([]cosign.Payout, 0, len(payouts))
 	for _, s := range seats {
 		amount, won := payouts[s.Seat]
@@ -300,6 +307,9 @@ func (m *PotManager) StakeFor(handID string, seat int, seats []AgentEndpoint, pa
 	if len(payouts) == 0 {
 		return StakeInfo{}, false
 	}
+	// Exactly the reservation Settle applies. If these diverge the seat expects an amount the
+	// settlement never pays, which is the same failure as deriving the wrong script.
+	payouts = reserveFee(payouts, settlementFee)
 
 	info := StakeInfo{
 		HandID:       handID,
@@ -308,9 +318,9 @@ func (m *PotManager) StakeFor(handID string, seat int, seats []AgentEndpoint, pa
 		PotSatoshis:  lp.pot.Satoshis,
 		PotScriptHex: hex.EncodeToString(*lp.pot.Script),
 		SenderKey:    m.tableKey.PubKey().ToDERHex(),
-		// A settlement may not burn more than this. Bounding the fee is what stops a
-		// proposal paying a token amount and consuming the rest.
-		MaxFee: 1000,
+		// Must admit the fee Settle reserves, or a seat refuses the very settlement the
+		// table builds. Headroom above it, not below.
+		MaxFee: settlementFee + 200,
 	}
 	for _, s := range seats {
 		amount, won := payouts[s.Seat]
@@ -438,4 +448,36 @@ func (m *PotManager) AllArmed(handID string, seats []AgentEndpoint) bool {
 		}
 	}
 	return len(seats) > 0
+}
+
+// settlementFee is what a settlement is allowed to consume.
+//
+// A settlement spends one n-of-n input whose unlocking script carries a signature per seat, so it
+// is larger than an ordinary spend. Generous enough to cover a six-seat table at the configured
+// rate, and bounded so it cannot be used to drain the pot.
+const settlementFee = 1200
+
+// reserveFee takes the fee off the top of the payouts.
+//
+// Deducted from the largest payout, because the winner can absorb it while a seat owed a small
+// side pot might be smaller than the fee itself. Returns a new map; the caller's is untouched.
+func reserveFee(payouts map[int]uint64, fee uint64) map[int]uint64 {
+	if len(payouts) == 0 || fee == 0 {
+		return payouts
+	}
+	out := make(map[int]uint64, len(payouts))
+	largest, largestSeat := uint64(0), -1
+	for seat, amount := range payouts {
+		out[seat] = amount
+		if amount > largest {
+			largest, largestSeat = amount, seat
+		}
+	}
+	if largestSeat < 0 || largest <= fee {
+		// Nothing can absorb the fee. Leave the payouts alone and let the settlement fail
+		// loudly rather than silently paying someone nothing.
+		return out
+	}
+	out[largestSeat] = largest - fee
+	return out
 }

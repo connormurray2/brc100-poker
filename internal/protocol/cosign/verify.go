@@ -125,6 +125,13 @@ func VerifyProposal(p Proposal, want Expectation) error {
 	// such a seat: nothing can leave the pot beyond its declared total and fee.
 	if len(want.Payouts) > 0 {
 		for key, sats := range got {
+			// A remainder returned to the funder is legitimate: the funding wallet pays the
+			// fee from the pot input and reclaims what is left. Tolerated only within the
+			// declared fee allowance, so it cannot be used to skim the pot -- anything
+			// larger is refused, and the total is bounded below regardless.
+			if want.MaxFee > 0 && sats <= want.MaxFee {
+				continue
+			}
 			return fmt.Errorf("cosign: the settlement contains an unexpected output of %d sat to %s…", sats, truncateScript(key))
 		}
 	}

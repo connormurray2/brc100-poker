@@ -325,3 +325,24 @@ func TestVerifyRefundValidation(t *testing.T) {
 		t.Error("accepted a nil own-script")
 	}
 }
+
+// A funder remainder is tolerated only inside the fee allowance, and the value bound still holds.
+//
+// This is the safety net for the change output that stalled real hands. It must not become a way
+// to skim: an output larger than the fee bound is still refused.
+func TestFunderRemainderIsBoundedByTheFeeAllowance(t *testing.T) {
+	winner := scriptFor(t, 0x51)
+	stray := scriptFor(t, 0x52)
+
+	want := expectation(winner, 3800)
+	want.MaxFee = 1400
+
+	// A remainder inside the allowance is the funding wallet reclaiming what the fee left.
+	if err := VerifyProposal(settlement(t, winner, 3800, stray, 1000), want); err != nil {
+		t.Errorf("a remainder inside the fee allowance was refused: %v", err)
+	}
+	// Beyond it, the total fee would exceed the bound, so it must be refused.
+	if err := VerifyProposal(settlement(t, winner, 3800, stray, 1399), want); err == nil {
+		t.Error("a remainder was accepted that pushed the fee past the bound")
+	}
+}

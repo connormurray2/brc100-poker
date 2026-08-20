@@ -206,3 +206,42 @@ func TestStakeIsNotOfferedBeforeTheHandIsDecided(t *testing.T) {
 		t.Fatal("a stake was offered with no payouts known")
 	}
 }
+
+// The settlement the table builds and the expectation it describes must agree exactly.
+//
+// The bug players hit: the engine's payouts sum to the whole pot, so a settlement paying them in
+// full left the funding wallet to find a fee, which it did by emitting change back to itself --
+// an output no seat declared, so every seat refused with "unexpected output of 1155 sat".
+func TestReserveFeeLeavesNoChangeAndMatchesTheExpectation(t *testing.T) {
+	// A whole pot to one winner, as heads-up produces.
+	payouts := map[int]uint64{1: 10000}
+	reserved := reserveFee(payouts, settlementFee)
+
+	total := uint64(0)
+	for _, v := range reserved {
+		total += v
+	}
+	if total != 10000-settlementFee {
+		t.Fatalf("payouts total %d, want %d so the fee leaves no change", total, 10000-settlementFee)
+	}
+	// The caller's map must be untouched, or a second call would deduct twice.
+	if payouts[1] != 10000 {
+		t.Fatalf("reserveFee mutated its input: %d", payouts[1])
+	}
+
+	// Split pots: the fee comes off the largest, since a small side pot may not cover it.
+	split := reserveFee(map[int]uint64{0: 9000, 1: 1000}, settlementFee)
+	if split[1] != 1000 {
+		t.Fatalf("the fee was taken from the smaller payout: %d", split[1])
+	}
+	if split[0] != 9000-settlementFee {
+		t.Fatalf("the fee was not taken from the largest payout: %d", split[0])
+	}
+
+	// Nothing large enough to absorb it: leave the payouts alone so the failure is loud
+	// rather than paying someone nothing.
+	tiny := reserveFee(map[int]uint64{0: 100}, settlementFee)
+	if tiny[0] != 100 {
+		t.Fatalf("a payout smaller than the fee was reduced to %d", tiny[0])
+	}
+}
