@@ -237,3 +237,10 @@ code {
 pre code { background: none; padding: 0; }
 
 label[for] { font-size: 0.85rem; color: var(--muted); margin-right: 0.2rem; }
+
+/* A limitation the player will otherwise discover as a failed hand. */
+.warnBox {
+  border: 1px solid rgba(251,191,36,0.35);
+  background: rgba(251,191,36,0.08);
+  border-radius: 6px; padding: 0.6rem 0.75rem; color: #fde68a;
+}

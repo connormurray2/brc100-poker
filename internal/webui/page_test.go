@@ -34,6 +34,11 @@ func TestSetupPageExplainsHowToRunAWallet(t *testing.T) {
 		}
 	}
 
+	// The page must explain that it carries deal traffic, because closing the tab stalls a hand.
+	if !strings.Contains(body, "carries deal traffic") {
+		t.Error("the setup page does not say the tab must stay open")
+	}
+
 	// Serving one table means the page can complete the command itself, so it must not ask the
 	// player to look anything up or substitute a placeholder.
 	for _, gone := range []string{

@@ -82,6 +82,18 @@ type Store struct {
 	// live is the playable table, if one exists.
 	live *LiveTable
 	now  func() time.Time
+	// relay carries substrate traffic to wallets on players' own machines, which this process
+	// cannot dial. Created on first use so a store with no relayed seats never allocates one.
+	relay     *Relay
+	relayOnce sync.Once
+}
+
+// Relay returns the browser relay, creating it on first use.
+//
+// One per store: the coordinator parks requests here and the seats' pages collect them.
+func (s *Store) Relay() *Relay {
+	s.relayOnce.Do(func() { s.relay = NewRelay() })
+	return s.relay
 }
 
 // NewStore returns an empty store.
@@ -293,10 +305,12 @@ func (s *Store) Handler(identityKey, version, network string) http.Handler {
 		}
 		var req struct {
 			IdentityKey string `json:"identityKey"`
-			// AgentURL is optional and only used by a headless seat that runs its own
-			// agent. A browser player connecting a BRC-100 wallet does not send one:
-			// their wallet is reached from the page, not registered with the table.
+			// AgentURL is used by a seat this process can actually dial: a headless
+			// player, or one co-hosted with the table.
 			AgentURL string `json:"agentUrl"`
+			// Relay says the seat's wallet is on the player's own machine and its browser
+			// will carry the traffic. This is the normal case for a remote table.
+			Relay bool `json:"relay"`
 		}
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body is not valid JSON"})
@@ -307,13 +321,24 @@ func (s *Store) Handler(identityKey, version, network string) http.Handler {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}
-		if req.AgentURL != "" {
-			if err := live.RegisterAgent(req.IdentityKey, req.AgentURL); err != nil {
+		// A wallet on a player's own machine cannot be dialled from here, so the seat is
+		// registered against the relay sentinel and its browser carries the traffic. An
+		// explicit URL is still honoured, which is what a co-hosted or headless seat uses.
+		agentURL := req.AgentURL
+		if req.Relay {
+			agentURL = RelayURL
+		}
+		if agentURL != "" {
+			if err := live.RegisterAgent(req.IdentityKey, agentURL); err != nil {
 				writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 				return
 			}
 		}
-		writeJSON(w, http.StatusOK, map[string]any{"seat": seat, "agentRegistered": req.AgentURL != ""})
+		writeJSON(w, http.StatusOK, map[string]any{
+			"seat":            seat,
+			"agentRegistered": agentURL != "",
+			"relayed":         agentURL == RelayURL,
+		})
 	})
 
 	mux.HandleFunc("/api/ready", func(w http.ResponseWriter, r *http.Request) {
@@ -330,6 +355,47 @@ func (s *Store) Handler(identityKey, version, network string) http.Handler {
 			return
 		}
 		if err := live.Ready(req.IdentityKey); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	})
+
+	// /api/relay/poll and /api/relay/reply let a seat's browser carry substrate traffic to a
+	// wallet this process cannot dial. The browser is a pipe: every request it collects is
+	// already signed by the table and addressed to one seat, and every response it returns is
+	// signed by that seat's wallet, so tampering is detected at the ends rather than trusted.
+	mux.HandleFunc("/api/relay/poll", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			IdentityKey string `json:"identityKey"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body is not valid JSON"})
+			return
+		}
+		if req.IdentityKey == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identityKey is required"})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"requests": s.Relay().Collect(req.IdentityKey)})
+	})
+
+	mux.HandleFunc("/api/relay/reply", func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			IdentityKey string          `json:"identityKey"`
+			Nonce       string          `json:"nonce"`
+			Body        json.RawMessage `json:"body"`
+			Error       string          `json:"error"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8<<20)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body is not valid JSON"})
+			return
+		}
+		if req.IdentityKey == "" || req.Nonce == "" {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "identityKey and nonce are required"})
+			return
+		}
+		if err := s.Relay().Deliver(req.IdentityKey, req.Nonce, req.Body, req.Error); err != nil {
 			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 			return
 		}

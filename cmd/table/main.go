@@ -152,6 +152,10 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("creating the deal coordinator: %w", err)
 	}
+	// Players' wallets listen on their own machines, which this process cannot dial, so deal
+	// traffic goes through each seat's browser. Sharing the store's relay is what connects the
+	// coordinator to the /api/relay endpoints the pages talk to.
+	coord.UseRelay(ui.Relay())
 	live.SetCoordinator(coord)
 	ui.SetLive(live)
 

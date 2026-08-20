@@ -140,6 +140,9 @@ el('connect').addEventListener('click', async () => {
 
     el('fundPanel').hidden = false;
     el('seatPanel').hidden = false;
+    // Start relaying immediately: the table may ask this wallet to deal at any point after the
+    // seat is taken, and a relay that only starts on join would miss the first request.
+    startRelay();
     await showBalance();
     await refresh();
   } catch (e) {
@@ -149,6 +152,60 @@ el('connect').addEventListener('click', async () => {
       `from this browser.`, 'bad');
   }
 });
+
+
+// --- the relay ------------------------------------------------------------
+//
+// The table runs elsewhere and cannot dial a wallet on this machine: 127.0.0.1 there means the
+// server, which is what made a remote hand fail with "connection refused". This page can reach
+// both, so it carries the traffic.
+//
+// It is a pipe and nothing more. Each request is already signed by the table and addressed to
+// this seat's identity key, and each response is signed by the wallet, so neither side has to
+// trust the page. Tampering, replaying or fabricating a message fails verification at the ends.
+let relayTimer = null;
+
+async function relayOnce() {
+  if (!identityKey || !agentBase) return;
+  let items = [];
+  try {
+    const r = await postJSON('/api/relay/poll', { identityKey });
+    items = r.requests || [];
+  } catch {
+    return; // the table is unreachable for a moment; the next tick retries
+  }
+
+  for (const item of items) {
+    try {
+      const res = await fetch(agentBase, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(item.body),
+      });
+      const text = await res.text();
+      let body;
+      try {
+        body = JSON.parse(text);
+      } catch {
+        throw new Error(`the wallet returned ${res.status} and not JSON`);
+      }
+      await postJSON('/api/relay/reply', { identityKey, nonce: item.nonce, body });
+    } catch (e) {
+      // Report the failure rather than letting the table wait out its timeout: the player
+      // then learns their wallet stopped answering, instead of the hand simply stalling.
+      await postJSON('/api/relay/reply', {
+        identityKey, nonce: item.nonce, error: String(e.message || e),
+      }).catch(() => {});
+    }
+  }
+}
+
+function startRelay() {
+  if (relayTimer) return;
+  // 400ms is short enough that a deal -- a few dozen round trips -- completes promptly, and long
+  // enough that an idle table is not being hammered.
+  relayTimer = setInterval(relayOnce, 400);
+}
 
 el('copyCommand').addEventListener('click', async () => {
   if (!agentCommand) return;
@@ -189,8 +246,8 @@ el('join').addEventListener('click', async () => {
   try {
     // The wallet is always registered: a dealerless deal is the only kind this page offers, and
     // the table cannot sequence one without knowing where the seat's wallet is.
-    const { seat, agentRegistered } = await postJSON('/api/join', {
-      identityKey, agentUrl: agentBase,
+    const { seat, agentRegistered, relayed } = await postJSON('/api/join', {
+      identityKey, relay: true,
     });
     mySeat = seat;
     if (!agentRegistered) {
@@ -199,7 +256,10 @@ el('join').addEventListener('click', async () => {
         `not be dealerless. Check the wallet address and rejoin.`, 'bad');
       return;
     }
-    setStatus('seatStatus', `You are seat ${seat}. Commit your buy-in when ready.`, 'ok');
+    const how = relayed
+      ? 'This page will carry deal traffic to your wallet, so keep the tab open.'
+      : 'Your wallet is registered directly.';
+    setStatus('seatStatus', `You are seat ${seat}. ${how} Commit your buy-in when ready.`, 'ok');
     await refresh();
   } catch (e) {
     setStatus('seatStatus', e.message, 'bad');

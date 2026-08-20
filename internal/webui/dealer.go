@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strconv"
 	"time"
@@ -38,7 +39,14 @@ type Coordinator struct {
 	caller     *ec.PrivateKey
 	originator string
 	client     *http.Client
+	// relay carries requests to wallets this process cannot dial, which is every wallet on a
+	// player's own machine. Nil means direct HTTP only, which is correct when the table and the
+	// wallets share a host.
+	relay *Relay
 }
+
+// UseRelay routes requests for relayed seats through the browser instead of dialling them.
+func (c *Coordinator) UseRelay(r *Relay) { c.relay = r }
 
 // NewCoordinator builds a deal coordinator.
 func NewCoordinator(caller *ec.PrivateKey, originator string) (*Coordinator, error) {
@@ -283,20 +291,37 @@ func (c *Coordinator) call(ctx context.Context, ag AgentEndpoint, method substra
 		return fmt.Errorf("encoding the request: %w", err)
 	}
 
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, ag.URL, bytes.NewReader(body))
-	if err != nil {
-		return err
-	}
-	httpReq.Header.Set("content-type", "application/json")
+	var replyBody json.RawMessage
+	if ag.URL == RelayURL {
+		// The seat's wallet is on the player's own machine, so this process cannot dial it.
+		// Their browser can, and carries the request for us.
+		if c.relay == nil {
+			return errors.New("this seat needs a browser relay, but none is configured")
+		}
+		replyBody, err = c.relay.Do(ctx, ag.IdentityKey, req.Nonce, body)
+		if err != nil {
+			return err
+		}
+	} else {
+		httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, ag.URL, bytes.NewReader(body))
+		if err != nil {
+			return err
+		}
+		httpReq.Header.Set("content-type", "application/json")
 
-	resp, err := c.client.Do(httpReq)
-	if err != nil {
-		return fmt.Errorf("calling the agent: %w", err)
+		resp, err := c.client.Do(httpReq)
+		if err != nil {
+			return fmt.Errorf("calling the agent: %w", err)
+		}
+		defer func() { _ = resp.Body.Close() }()
+		replyBody, err = io.ReadAll(io.LimitReader(resp.Body, 8<<20))
+		if err != nil {
+			return fmt.Errorf("reading the response: %w", err)
+		}
 	}
-	defer func() { _ = resp.Body.Close() }()
 
 	var envelope substrate.Response
-	if err := json.NewDecoder(resp.Body).Decode(&envelope); err != nil {
+	if err := json.Unmarshal(replyBody, &envelope); err != nil {
 		return fmt.Errorf("decoding the response: %w", err)
 	}
 	if envelope.Error != nil {
