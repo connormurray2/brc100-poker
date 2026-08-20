@@ -432,7 +432,11 @@ async function refresh() {
   // Say whose turn it is in words, above the felt. A badge on a seat row was too easy to miss,
   // and a player who cannot tell whether they are holding up the table will sit and wait.
   const banner = el('turnBanner');
-  if (v.phase === 'hand complete') {
+  if (v.stallReason) {
+    banner.hidden = false;
+    banner.className = 'turnBanner waiting';
+    banner.textContent = `The table stopped: ${v.stallReason}`;
+  } else if (v.phase === 'hand complete') {
     banner.hidden = false;
     banner.className = 'turnBanner';
     banner.textContent = 'Hand complete. The next hand starts in a few seconds.';

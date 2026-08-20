@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 
 	ec "github.com/bsv-blockchain/go-sdk/primitives/ec"
@@ -373,6 +374,14 @@ func (m *PotManager) collectRefundSignatures(ctx context.Context, handID string,
 			"maxFee": uint64(400),
 		}
 		if err := m.coord.call(ctx, s, substrate.MethodSignRefund, params, &out); err != nil {
+			// A wallet built before signRefund existed reports the method as unserved. That
+			// is a version mismatch rather than a refusal, and saying so is the difference
+			// between a player restarting their wallet and giving up.
+			if strings.Contains(err.Error(), "not served") {
+				return nil, fmt.Errorf(
+					"seat %d is running a wallet too old for this table: it does not serve "+
+						"signRefund. Restart cmd/agent from the current source", s.Seat)
+			}
 			return nil, fmt.Errorf("seat %d would not sign: %w", s.Seat, err)
 		}
 		der, err := hex.DecodeString(out.DER)

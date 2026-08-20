@@ -664,12 +664,16 @@ func (l *LiveTable) RunHands(ctx context.Context, settle time.Duration, heightFn
 				if log != nil {
 					log.Error("cannot read the chain height to fund a pot", "error", err)
 				}
+				l.recordStall("the table could not read the chain height: " + err.Error())
 				return
 			}
 			if err := l.StartFundedHand(ctx, height); err != nil {
 				if log != nil {
 					log.Error("the pot could not be funded; the session stops here", "error", err)
 				}
+				// Tell the players why. A table that simply stops looks identical to one
+				// waiting for someone, and a player cannot act on a spinner.
+				l.recordStall(err.Error())
 				return
 			}
 			if log != nil {
@@ -888,4 +892,12 @@ func (l *LiveTable) StakeForSeat(seat int) (StakeInfo, bool) {
 	}
 	l.mu.Unlock()
 	return l.pots.StakeFor(handID, seat, seats, payouts)
+}
+
+// recordStall makes a stopped session visible to the players.
+func (l *LiveTable) recordStall(reason string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.stallReason = reason
+	l.readyToStart = false
 }
