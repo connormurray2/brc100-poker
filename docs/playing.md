@@ -61,21 +61,20 @@ go run ./cmd/agent -key secrets/player.key -db secrets/player.db
 
 ## 3. Run your wallet process
 
-This is the part that gives you card privacy. First get the table's identity key, so your wallet
-knows who is allowed to ask it for signatures:
+This is the part that gives you card privacy.
 
-```sh
-curl -s https://poker.siftbitcoin.com/api/info | jq -r .identityKey
-```
+**Open the table page and copy the command it shows you.** It arrives complete — the table's
+identity key and origin are already filled in, because this deployment serves a single table and the
+page knows both. Click **Copy command**, paste into a terminal, run it.
 
-Then start your wallet, authorising that table and allowing the page to reach it:
+It looks like this:
 
 ```sh
 go run ./cmd/agent \
   -key    secrets/player.key \
   -db     secrets/player.db \
-  -table  "<the identity key from above>" \
-  -origin https://poker.siftbitcoin.com \
+  -table  <this table's identity key, prefilled> \
+  -origin <this page's origin, prefilled> \
   -listen 127.0.0.1:8091
 ```
 
@@ -121,8 +120,8 @@ a closed terminal declines too.
 Open **https://poker.siftbitcoin.com**.
 
 1. **Connect wallet.** The page reads your identity key. Your private key never leaves your machine.
-1. **Connect.** The page shows the exact commands to run, prefilled with this table's address, and
-   the wallet address defaults to `http://127.0.0.1:8091`.
+1. **Connect.** The page hands you one complete command to run, and the wallet address defaults to
+   `http://127.0.0.1:8091`.
 2. **Fund**, if you have not already — the page claims from the faucet through your running wallet
    and shows the balance.
 3. **Join the table** and commit your buy-in.

@@ -69,10 +69,25 @@ async function loadInfo() {
     const info = await getJSON('/api/info');
     el('network').textContent = info.network || '?';
     el('version').textContent = info.version || '';
-    // Fill the commands with this page's own origin, so they can be pasted without editing.
-    for (const id of ['originHost', 'originEcho', 'originEcho2']) {
-      const n = el(id);
-      if (n) n.textContent = window.location.origin;
+    // The page knows the table's identity key and its own origin, so the command it shows is
+    // complete: a player copies it and runs it, with nothing left to look up or substitute.
+    // Serving one table is what makes this possible.
+    const origin = window.location.origin;
+    const n = el('originEcho2');
+    if (n) n.textContent = origin;
+    if (info.identityKey) {
+      agentCommand = [
+        'go run ./cmd/agent \\',
+        '  -key    secrets/player.key \\',
+        '  -db     secrets/player.db \\',
+        `  -table  ${info.identityKey} \\`,
+        `  -origin ${origin} \\`,
+        '  -listen 127.0.0.1:8091',
+      ].join('\n');
+      el('agentCommand').textContent = agentCommand;
+    } else {
+      el('agentCommand').textContent =
+        'The table did not report its identity key, so this command cannot be completed.';
     }
   } catch (e) {
     setStatus('connectStatus', `Could not reach the table service: ${e.message}`, 'bad');
@@ -81,6 +96,10 @@ async function loadInfo() {
 
 // agentBase is the wallet the player is running, as typed into the page.
 let agentBase = '';
+
+// agentCommand is the fully-populated command shown to the player, kept so the copy button and
+// the visible text can never disagree.
+let agentCommand = '';
 
 function agentURL() {
   return el('agentUrl').value.trim().replace(/\/+$/, '');
@@ -129,6 +148,24 @@ el('connect').addEventListener('click', async () => {
       `started it with -origin ${window.location.origin}, and that the address is reachable ` +
       `from this browser.`, 'bad');
   }
+});
+
+el('copyCommand').addEventListener('click', async () => {
+  if (!agentCommand) return;
+  try {
+    await navigator.clipboard.writeText(agentCommand);
+  } catch {
+    // Clipboard access is refused on an insecure origin and by some browsers. Selecting the
+    // text is a worse experience than copying it, but it beats a button that does nothing.
+    const range = document.createRange();
+    range.selectNodeContents(el('agentCommand'));
+    const sel = window.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+  }
+  const state = el('copyState');
+  state.hidden = false;
+  setTimeout(() => { state.hidden = true; }, 1500);
 });
 
 el('refreshBalance').addEventListener('click', showBalance);

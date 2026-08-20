@@ -19,19 +19,30 @@ func TestSetupPageExplainsHowToRunAWallet(t *testing.T) {
 	}
 	body := w.Body.String()
 
-	// The commands a player must run, and the controls they then use.
+	// The controls a player needs, and the placeholder the command is rendered into.
 	for _, want := range []string{
 		"Start your wallet",
-		"cmd/agent",
 		"cmd/keygen",
-		"-table",
-		"-origin",
+		`id="agentCommand"`,
+		`id="copyCommand"`,
 		`id="agentUrl"`,
 		`id="faucet"`,
 		`id="balance"`,
 	} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the setup page does not mention %q", want)
+		}
+	}
+
+	// Serving one table means the page can complete the command itself, so it must not ask the
+	// player to look anything up or substitute a placeholder.
+	for _, gone := range []string{
+		"identity key from step 1",
+		"api/info | jq",
+		"pasting that key",
+	} {
+		if strings.Contains(body, gone) {
+			t.Errorf("the setup page still asks the player to fill in %q", gone)
 		}
 	}
 

@@ -25,33 +25,24 @@
       which is why the game needs it rather than a browser extension.
     </p>
 
-    <ol class="steps">
-      <li>
-        <p>Get the table's identity key, so your wallet only answers to this table:</p>
-        <pre><code>curl -s <span id="originHost">…</span>/api/info | jq -r .identityKey</code></pre>
-      </li>
-      <li>
-        <p>Start your wallet, pasting that key after <code>-table</code>:</p>
-        <pre><code>go run ./cmd/agent \
-  -key    secrets/player.key \
-  -db     secrets/player.db \
-  -table  &lt;identity key from step 1&gt; \
-  -origin <span id="originEcho">…</span> \
-  -listen 127.0.0.1:8091</code></pre>
-        <p class="hint">
-          No key yet? <code>go run ./cmd/keygen -out secrets/player.key</code> first. Back up both
-          the key and the database — the database <i>is</i> the wallet.
-        </p>
-      </li>
-      <li>
-        <p>Leave it running, then connect:</p>
-        <div class="controls">
-          <label for="agentUrl">Wallet address</label>
-          <input id="agentUrl" type="text" value="http://127.0.0.1:8091" size="24">
-          <button id="connect" class="primary">Connect</button>
-        </div>
-      </li>
-    </ol>
+    <p class="hint">
+      No key yet? Run <code>go run ./cmd/keygen -out secrets/player.key</code> first, and back up
+      both the key and the database &mdash; the database <i>is</i> the wallet.
+    </p>
+
+    <p>Paste this into a terminal. It is already filled in for this table:</p>
+    <pre><code id="agentCommand">loading…</code></pre>
+    <div class="controls">
+      <button id="copyCommand">Copy command</button>
+      <span id="copyState" class="tag muted" hidden>copied</span>
+    </div>
+
+    <p>Leave it running, then connect:</p>
+    <div class="controls">
+      <label for="agentUrl">Wallet address</label>
+      <input id="agentUrl" type="text" value="http://127.0.0.1:8091" size="24">
+      <button id="connect" class="primary">Connect</button>
+    </div>
 
     <div id="connectStatus" class="status"></div>
 
