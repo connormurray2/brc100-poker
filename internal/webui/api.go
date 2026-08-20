@@ -42,8 +42,11 @@ type TableView struct {
 	// ForValue reports whether hands at this table move real coins, so the UI never implies
 	// value is at stake when only chips are.
 	ForValue bool `json:"forValue"`
-	// SettlementTxID is the last completed hand's settlement, once broadcast.
+	// SettlementTxID is the session's settlement, once broadcast.
 	SettlementTxID string `json:"settlementTxid,omitempty"`
+	// SessionPot reports that a session pot is open, so the UI can say the chain is touched
+	// only at buy-in and cash-out rather than implying a payout each hand.
+	SessionPot bool `json:"sessionPot"`
 
 	// Street is the betting round, or empty before the deal.
 	Street string `json:"street,omitempty"`

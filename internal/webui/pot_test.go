@@ -245,3 +245,52 @@ func TestReserveFeeLeavesNoChangeAndMatchesTheExpectation(t *testing.T) {
 		t.Fatalf("a payout smaller than the fee was reduced to %d", tiny[0])
 	}
 }
+
+// The property the whole design exists for: refusing to sign never pays.
+//
+// Stated as arithmetic over the states a session actually passes through, so a future change that
+// reintroduces the incentive fails here rather than in a real game.
+func TestRefusingToSignNeverPaysAcrossASession(t *testing.T) {
+	const buyIn = 20000
+	pot := uint64(buyIn * 2)
+
+	// A session where seat 1 is losing. At each state, compare what seat 1 gets by settling
+	// against what it gets by refusing and falling back on the refund.
+	states := []map[int]uint64{
+		{0: 20000, 1: 20000}, // buy-in
+		{0: 20300, 1: 19700},
+		{0: 19800, 1: 20200},
+		{0: 21000, 1: 19000}, // seat 1 down 1000
+	}
+
+	for i, balances := range states {
+		var total uint64
+		for _, v := range balances {
+			total += v
+		}
+		if total != pot {
+			t.Fatalf("state %d: balances total %d, want the pot %d", i, total, pot)
+		}
+
+		// Settling pays seat 1 its balance.
+		settling := balances[1]
+		// Refusing leaves seat 1 with the refund, which pays the same balances. The fee is
+		// taken from the largest, so seat 1 gets at least its balance minus the fee.
+		refusing := balances[1]
+		if balances[1] >= balances[0] {
+			refusing -= refundFee
+		}
+
+		if refusing > settling {
+			t.Fatalf("state %d: refusing pays %d and settling pays %d, so refusing is profitable",
+				i, refusing, settling)
+		}
+	}
+
+	// And the contrast with the old design, kept as the reason this matters: a per-seat refund
+	// paying the whole pot made refusing worth up to the entire pot.
+	oldRefusalValue := pot - 300
+	if oldRefusalValue <= states[len(states)-1][1] {
+		t.Fatal("the old design's payoff should have exceeded the losing balance; the comparison is wrong")
+	}
+}

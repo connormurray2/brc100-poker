@@ -111,6 +111,12 @@
     </div>
 
     <div id="turnBanner" class="turnBanner" hidden></div>
+    <p class="hint" id="sessionNote" hidden>
+      You bought into a <b>session pot</b>, not a pot per hand. Hands move your balance inside it
+      and nothing touches the chain until you cash out. That is deliberate: it means walking away
+      from a hand you lost gains you nothing, because the refund you hold pays your current
+      balance rather than your original buy-in.
+    </p>
 
     <div class="stakes" id="stakes"></div>
 
@@ -124,7 +130,7 @@
 
     <!-- The action bar: only what the engine says is legal right now. -->
     <div class="controls" style="margin-top:0.8rem">
-      <button id="sitOut">Get up from the table</button>
+      <button id="sitOut">Cash out and leave</button>
     </div>
 
     <div id="actions" class="actions" hidden>

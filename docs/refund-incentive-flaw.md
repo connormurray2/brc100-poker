@@ -1,7 +1,8 @@
 # The refund incentive flaw
 
-**Status: known, unfixed, and structural.** Real-value play is not safe with an opponent who would
-exploit it. Found by a player asking the obvious question during a test session on 2026-08-20.
+**Status: fixed by the session pot.** This document is the analysis that led there; see
+[session-pot-design.md](session-pot-design.md) for what replaced it. Found by a player asking the
+obvious question during a test session on 2026-08-20.
 
 ---
 

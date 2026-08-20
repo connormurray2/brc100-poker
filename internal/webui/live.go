@@ -70,10 +70,12 @@ type LiveTable struct {
 	settlementTxID string
 	// readyToStart means every seat has committed and a value hand is waiting on its pot.
 	readyToStart bool
-	// openPotHand is the hand ID the currently funded pot belongs to. Held rather than
-	// recomputed, because handNo advances the moment a hand ends and handIDLocked would then
-	// name the next hand, not the one whose pot is still open.
+	// openPotHand is the session the funded pot belongs to. One pot spans the whole session,
+	// so this is set once at buy-in and cleared when the session settles.
 	openPotHand string
+	// sessionID identifies the session pot. Distinct from a hand ID: hands move balances
+	// within it, and only the session settles on chain.
+	sessionID string
 
 	now func() time.Time
 }
@@ -239,10 +241,18 @@ func (l *LiveTable) PendingStart() bool {
 	return l.readyToStart && l.st == nil
 }
 
-// StartFundedHand funds the pot and deals the first hand of a session.
+// StartFundedHand opens the session pot if needed and deals the next hand.
+//
+// The pot is funded once per session. Later hands reuse it, moving balances rather than touching
+// the chain, which is what makes refusing to settle unprofitable.
 func (l *LiveTable) StartFundedHand(ctx context.Context, height uint32) error {
-	if err := l.OpenPotForHand(ctx, height); err != nil {
-		return err
+	l.mu.Lock()
+	needsPot := l.openPotHand == ""
+	l.mu.Unlock()
+	if needsPot {
+		if err := l.OpenPotForHand(ctx, height); err != nil {
+			return err
+		}
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -602,6 +612,7 @@ func (l *LiveTable) View(seat int) TableView {
 		UpdatedAt:        l.now(),
 		ForValue:         l.pots.Enabled(),
 		SettlementTxID:   l.settlementTxID,
+		SessionPot:       l.openPotHand != "",
 	}
 	if l.st != nil {
 		v.Street = l.st.Street.String()
@@ -699,38 +710,17 @@ func (l *LiveTable) RunHands(ctx context.Context, settle time.Duration, heightFn
 		// means a pot is never left open while a new hand's pot is funded, which would leave
 		// two live pots and no way for a player to tell which refund protects which stake.
 		if l.ForValue() {
-			// Seats arm from their browsers, so allow time for that before treating a
-			// missing expectation as a failure. Bounded, because a player who closed their
-			// tab would otherwise hold the table open indefinitely.
-			var txid string
-			var err error
-			deadline := time.Now().Add(45 * time.Second)
-			for {
-				txid, err = l.SettleOnChain(ctx)
-				if !errors.Is(err, ErrAwaitingSeats) {
-					break
-				}
-				if time.Now().After(deadline) {
-					err = errors.New("webui: a seat never recorded its stake; its browser " +
-						"may have been closed. Every seat still holds a refund")
-					break
-				}
-				select {
-				case <-ctx.Done():
-					return
-				case <-time.After(time.Second):
-				}
-			}
-			if err != nil {
+			// A hand does not settle on chain. It moves the session balances and re-signs
+			// the refund for the new state, so the only chain activity is the buy-in and
+			// the exit. That is what makes refusing to settle unprofitable: a refusing seat
+			// recovers the balance it actually holds.
+			if err := l.ApplyHandBalances(ctx); err != nil {
 				if log != nil {
-					log.Error("the hand could not be settled on chain; the session stops here",
+					log.Error("the session balances could not be updated; the session stops here",
 						"error", err)
 				}
 				l.recordStall(err.Error())
 				return
-			}
-			if txid != "" && log != nil {
-				log.Info("hand settled on chain", "txid", txid)
 			}
 		}
 
@@ -741,8 +731,11 @@ func (l *LiveTable) RunHands(ctx context.Context, settle time.Duration, heightFn
 				if err != nil && log != nil {
 					log.Error("the next hand could not be prepared", "error", err)
 				}
-				if log != nil && err == nil {
-					log.Info("the session ended: a seat left or is out of chips")
+				if err == nil {
+					if log != nil {
+						log.Info("the session ended: a seat left or is out of chips")
+					}
+					l.settleSessionOnExit(ctx, log)
 				}
 				return
 			}
@@ -760,6 +753,9 @@ func (l *LiveTable) RunHands(ctx context.Context, settle time.Duration, heightFn
 			if log != nil {
 				log.Info("the session ended: a seat left or is out of chips")
 			}
+			// This is where the chain sees the result. Everything before it moved balances
+			// inside the pot.
+			l.settleSessionOnExit(ctx, log)
 			return
 		}
 		if log != nil {
@@ -858,7 +854,9 @@ func (l *LiveTable) OpenPotForHand(ctx context.Context, height uint32) error {
 		l.mu.Unlock()
 		return nil // a chips-only table; the view says so
 	}
-	handID := l.handIDLocked()
+	// One pot for the session, identified separately from any hand within it.
+	l.sessionID = fmt.Sprintf("%s-session", l.id)
+	sessionID := l.sessionID
 	seats := l.endpointsLocked()
 	pot := l.terms.BuyInSatoshis * uint64(len(l.seats))
 	l.mu.Unlock()
@@ -867,13 +865,13 @@ func (l *LiveTable) OpenPotForHand(ctx context.Context, height uint32) error {
 		return errors.New("webui: a pot needs every seat to have a reachable wallet")
 	}
 
-	if _, err := l.pots.OpenPot(ctx, handID, seats, pot, height); err != nil {
+	if _, err := l.pots.OpenPot(ctx, sessionID, seats, pot, height); err != nil {
 		return err
 	}
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	l.openPotHand = handID
+	l.openPotHand = sessionID
 	l.money.SetHeight(height)
 	for _, s := range seats {
 		// Refunds exist for every seat before any stake is called committed.
@@ -959,5 +957,118 @@ func (l *LiveTable) MarkSeatArmed(seat int) {
 	l.mu.Unlock()
 	if pots != nil && hand != "" {
 		pots.MarkArmed(hand, seat)
+	}
+}
+
+// ApplyHandBalances carries a finished hand's result into the session pot.
+//
+// Runs outside the table lock: re-signing the refund is a round trip to every seat's wallet.
+//
+// The refund must be re-signed before the next hand deals. Otherwise a seat that loses the next
+// hand could fall back on a refund reflecting the balance it held before it.
+func (l *LiveTable) ApplyHandBalances(ctx context.Context) error {
+	l.mu.Lock()
+	if l.pots == nil || !l.pots.Enabled() || l.st == nil || !l.st.Done || l.openPotHand == "" {
+		l.mu.Unlock()
+		return nil
+	}
+	sessionID := l.openPotHand
+	seats := l.endpointsLocked()
+	// The engine's seat stacks are the authoritative balances: they already reflect the hand's
+	// payouts, and they sum to the pot because chips only move between seats.
+	balances := make(map[int]uint64, len(l.st.Seats))
+	for i, seat := range l.st.Seats {
+		if seat.Stack > 0 {
+			balances[i] = uint64(seat.Stack)
+		}
+	}
+	l.mu.Unlock()
+
+	if len(seats) == 0 || len(balances) == 0 {
+		return nil
+	}
+	if err := l.pots.ApplyHand(ctx, sessionID, seats, balances); err != nil {
+		return err
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.money.Settled("", balances)
+	return nil
+}
+
+// CashOut settles the session on chain, paying every seat its final balance.
+//
+// This is the only settlement. It runs when a player leaves, which is what a session-spanning pot
+// means: the chain sees a buy-in and an exit, not a transaction per hand.
+func (l *LiveTable) CashOut(ctx context.Context) (string, error) {
+	l.mu.Lock()
+	if l.pots == nil || !l.pots.Enabled() || l.openPotHand == "" || l.settlementTxID != "" {
+		l.mu.Unlock()
+		return "", nil
+	}
+	sessionID := l.openPotHand
+	seats := l.endpointsLocked()
+	l.mu.Unlock()
+
+	balances, ok := l.pots.Balances(sessionID)
+	if !ok {
+		return "", fmt.Errorf("webui: no session pot is open for %s", sessionID)
+	}
+	if !l.pots.AllArmed(sessionID, seats) {
+		return "", ErrAwaitingSeats
+	}
+
+	txid, err := l.pots.Settle(ctx, sessionID, seats, balances)
+	if err != nil {
+		l.mu.Lock()
+		l.stallReason = err.Error()
+		l.mu.Unlock()
+		return "", err
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.settlementTxID = txid
+	l.openPotHand = ""
+	l.money.Settled(txid, balances)
+	return txid, nil
+}
+
+// settleSessionOnExit cashes out the session, waiting for seats to arm.
+//
+// Bounded: a player who closed their tab must not hold the pot open forever. If it times out the
+// pot stays unspent and every seat holds a refund paying its own balance, so nobody is worse off
+// than they were -- which is the whole point of the refund tracking the balance.
+func (l *LiveTable) settleSessionOnExit(ctx context.Context, log *slog.Logger) {
+	deadline := time.Now().Add(60 * time.Second)
+	for {
+		txid, err := l.CashOut(ctx)
+		switch {
+		case err == nil:
+			if txid != "" && log != nil {
+				log.Info("session settled on chain", "txid", txid)
+			}
+			return
+		case !errors.Is(err, ErrAwaitingSeats):
+			if log != nil {
+				log.Error("the session could not be settled on chain", "error", err)
+			}
+			l.recordStall(err.Error())
+			return
+		case time.Now().After(deadline):
+			msg := "webui: a seat never recorded its stake, so the session could not settle. " +
+				"Every seat holds a refund paying its own balance"
+			if log != nil {
+				log.Error(msg)
+			}
+			l.recordStall(msg)
+			return
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(time.Second):
+		}
 	}
 }

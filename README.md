@@ -14,13 +14,13 @@ Target network: **Teratestnet** (`ttn`). Deployment target: Digital Ocean.
 service coordinates play and pays its own fees, but it cannot move the pot — spending the pot
 requires an authorisation from every seat.
 
-> **Known flaw: real-value play is not safe with untrusted opponents.** A losing seat gets nothing
-> from a settlement, so refusing to sign it is always at least as good — the timelocked refund then
-> pays them something. This is structural to a single-hand pot, not a parameter to tune, and the
-> fix is a session-spanning pot where refusing forfeits a whole stack. Nobody loses money to a bug;
-> a rational loser simply stalls every hand. Full analysis, including why the obvious fix does not
-> work, in [docs/refund-incentive-flaw.md](docs/refund-incentive-flaw.md). Play for chips until
-> then.
+> **Real value moves at buy-in and cash-out, not per hand.** Players fund one **session pot** and
+> hands move a running balance inside it. After every hand all seats co-sign a fresh refund paying
+> each seat its *current* balance, each maturing earlier than the last, so a seat that refuses to
+> sign gains nothing: it recovers exactly what settling would have paid it, and cannot fall back on
+> a staler refund that paid more. A griefer can still impose a delay; they cannot profit. See
+> [docs/session-pot-design.md](docs/session-pot-design.md), and
+> [docs/refund-incentive-flaw.md](docs/refund-incentive-flaw.md) for the flaw this replaced.
 
 This is why the architecture looks the way it does, and it has one direct consequence worth
 stating up front: **every seat must be online to settle a hand.** The backstop is that each

@@ -432,6 +432,10 @@ async function refresh() {
     result.hidden = false;
   } else result.hidden = true;
 
+  // A session pot changes what a player should expect, so say so once it exists.
+  const note = el('sessionNote');
+  if (note) note.hidden = !v.sessionPot;
+
   // Say whose turn it is in words, above the felt. A badge on a seat row was too easy to miss,
   // and a player who cannot tell whether they are holding up the table will sit and wait.
   const banner = el('turnBanner');
@@ -535,10 +539,12 @@ loadInfo();
 setInterval(refresh, 2000);
 
 el('sitOut').addEventListener('click', async () => {
-  if (!confirm('Get up from the table? The session ends after the current hand.')) return;
+  if (!confirm('Cash out and leave? The session settles on chain after the current hand, ' +
+    'paying you your balance.')) return;
   try {
     await postJSON('/api/sitout', { identityKey });
-    setStatus('seatStatus', 'You are getting up. The table stops after this hand.', 'ok');
+    setStatus('seatStatus',
+      'Cashing out. The session settles on chain after this hand and pays you your balance.', 'ok');
   } catch (e) {
     setStatus('seatStatus', e.message, 'bad');
   }

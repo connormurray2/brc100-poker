@@ -1,6 +1,6 @@
 # Session-spanning pot: design
 
-**Status: design, not implemented.** Supersedes the per-hand pot, which is incentive-incompatible —
+**Status: implemented.** Steps 1-5 of section 8 are done; see the tests named there. Supersedes the per-hand pot, which is incentive-incompatible —
 see [refund-incentive-flaw.md](refund-incentive-flaw.md).
 
 The goal in one sentence: **a player must never gain by refusing to sign.**
