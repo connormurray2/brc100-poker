@@ -89,7 +89,9 @@ What the flags mean, and why they matter:
 | `-origin` | Lets the browser page call your wallet. Without it, an unlisted page cannot even discover which wallet is running here. |
 | `-listen` | Bound to `127.0.0.1` on purpose. Nothing outside your machine can reach it. |
 | `-require-tls` | Add this if you ever expose the wallet beyond localhost. Refuses plaintext. |
-| `-auto-approve` | **Don't.** It approves every signing request without asking, which is a custodial posture in disguise. It exists for tests and says so loudly when used. |
+| `-max-pot` | Play unattended. Your wallet signs without prompting for pots up to this many satoshis, and refuses anything larger. A session is many hands and nobody can answer a terminal prompt between each one, so this is how you consent once rather than either answering everything or approving blindly. |
+| `-max-fee` | The most any one signature may consume in fees when unattended. Defaults to 2000. |
+| `-auto-approve` | **Don't.** It approves every signing request without asking, which is a custodial posture in disguise. Prefer `-max-pot`, which is bounded. It exists for tests and says so loudly when used. |
 
 ### What you will see
 
@@ -112,6 +114,11 @@ Read the outputs. Your wallet has already checked this transaction against its o
 hand and refused anything that did not match, so what you are being asked is the last gate rather
 than the only one. **Anything other than `y` declines** — a mistyped answer must not move money, and
 a closed terminal declines too.
+
+**This is why `-max-pot` exists.** A prompt per hand is fine for a single hand and impossible for a
+session: the table waits, the other players wait, and the hand stalls. With `-max-pot` your wallet
+answers for you within a limit you set, logging each approval so the session stays auditable, and
+still refuses anything above the limit or inconsistent with what it expects to be paid.
 
 ---
 

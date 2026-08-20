@@ -82,7 +82,8 @@ async function loadInfo() {
         '  -db     secrets/player.db \\',
         `  -table  ${info.identityKey} \\`,
         `  -origin ${origin} \\`,
-        '  -listen 127.0.0.1:8091',
+        '  -listen 127.0.0.1:8091 \\',
+        '  -max-pot 20000',
       ].join('\n');
       el('agentCommand').textContent = agentCommand;
     } else {

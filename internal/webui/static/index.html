@@ -45,6 +45,12 @@
     </div>
 
     <p class="hint">
+      <code>-max-pot</code> lets your wallet sign without asking, up to that many satoshis per
+      pot. Without it, every hand waits for you to type <b>y</b> in the terminal &mdash; which is
+      fine for one hand and impractical for a session. Your wallet still refuses anything above
+      the limit, and still checks every settlement against what it expects to be paid.
+    </p>
+    <p class="hint">
       Keep this tab open while you play. The table cannot reach your wallet directly &mdash; it
       runs elsewhere, and <code>127.0.0.1</code> there would mean the server &mdash; so this page
       carries deal traffic between them. Everything is signed end to end, so the page cannot read

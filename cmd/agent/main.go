@@ -44,6 +44,8 @@ func run() error {
 	originator := flag.String("originator", "agent.poker.local", "FQDN-shaped originator for BRC-100 calls")
 	table := flag.String("table", "", "identity key of the table service to authorise")
 	autoApprove := flag.Bool("auto-approve", false, "approve every signing request without asking (development only)")
+	maxPot := flag.Uint64("max-pot", 0, "play unattended: sign for pots up to this many satoshis without prompting")
+	maxFee := flag.Uint64("max-fee", 2000, "the most any one signature may consume in fees when playing unattended")
 	requireTLS := flag.Bool("require-tls", false, "refuse substrate calls over plaintext")
 	origins := flag.String("origin", "", "comma-separated web origins allowed to call this agent from a browser")
 	logLevel := flag.String("log-level", "info", "debug, info, warn or error")
@@ -89,10 +91,25 @@ func run() error {
 		return fmt.Errorf("starting status tracking: %w", err)
 	}
 
-	// Auto-approval is a development convenience and a custodial posture in disguise, so it
-	// is opt-in, loud, and never the default.
+	// Poker is unattended by nature: a session is many hands and a player cannot answer a
+	// terminal prompt between each one. -max-pot is how they consent once, to a bounded
+	// session, instead of either answering every request or approving everything blindly.
 	approver := interactiveApprover(logger)
-	if *autoApprove {
+	var session *agent.SessionApprover
+	switch {
+	case *maxPot > 0:
+		session, err = agent.NewSessionApprover(*maxPot, *maxFee, func(line string) {
+			logger.Info(line)
+		})
+		if err != nil {
+			return err
+		}
+		approver = substrate.ApproverFunc(session.Approve)
+		logger.Info("playing unattended within session limits",
+			"maxPotSatoshis", *maxPot, "maxFeeSatoshis", *maxFee)
+	case *autoApprove:
+		// Distinct from -max-pot, and still loud: this approves anything at all, which is a
+		// custodial posture in disguise and exists for tests.
 		logger.Warn("auto-approving every signing request: this is development behaviour and gives away the protection the agent exists to provide")
 		approver = substrate.ApproverFunc(func(substrate.SigningRequest) error { return nil })
 	}
@@ -135,6 +152,13 @@ func run() error {
 	fmt.Printf("player identity: %s\n", a.Identity())
 	fmt.Printf("balance:         %d sat\n", balance)
 	fmt.Printf("substrate:       http://%s/  (audience %s)\n", *listen, a.Server().Audience())
+	if session != nil {
+		fmt.Printf("unattended:      signing pots up to %d sat, fees up to %d sat\n", *maxPot, *maxFee)
+		fmt.Printf("                 anything larger is refused without asking you\n")
+	} else if !*autoApprove {
+		fmt.Printf("approval:        every signing request asks you here. Pass -max-pot <sat> to\n")
+		fmt.Printf("                 play unattended within a limit you set.\n")
+	}
 
 	reporter := health.New(false, false)
 	for _, dep := range []string{health.DepDatabase, health.DepStatusTracking} {
