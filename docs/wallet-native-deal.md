@@ -1,5 +1,9 @@
 # Wallet-native deal: what is missing, and what to do about it
 
+> Implementing a wallet? Start with **[wallet-conformance.md](wallet-conformance.md)**, which
+> specifies what a wallet must do to play. This document is narrower: it explains the one capability
+> BRC-100 is missing and what finishing it would take.
+
 **Status as of 2026-08-20.** The money is non-custodial and proven. The *deal* is not yet
 wallet-native, and this document records exactly why, exactly what would fix it, and exactly
 where the code has to change. It exists so the gap is not rediscovered from scratch.

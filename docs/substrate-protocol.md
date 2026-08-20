@@ -1,5 +1,10 @@
 # The BRC-100 substrate protocol
 
+> For wallet implementers: **[wallet-conformance.md](wallet-conformance.md)** collects the
+> normative requirements — digests, grants, the deal methods, the signing gates and the
+> cryptographic rules — into one specification with a checklist. This document is the protocol
+> reference behind it.
+
 A wire protocol for driving a BRC-100 wallet over the network, so a wallet that holds a player's
 key can serve requests from a caller it does not trust.
 

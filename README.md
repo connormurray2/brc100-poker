@@ -36,6 +36,20 @@ records exactly what is missing, the upstream PRs tracking it
 [BRCs#230](https://github.com/bsv-blockchain/BRCs/pull/230)), the code that has to change in the SDK
 *and in BSV Desktop*, and the traps already paid for.
 
+## Playing with your own wallet
+
+A player runs a **BRC-100 wallet process on their own machine**. It holds their key, serves an HTTP
+endpoint the table can call, and performs the deal operations internally — which is why this works
+today without any change to a published wallet. The browser is UI only; it never sees a key.
+
+The reference wallet is `cmd/agent` in this repository, built on
+[go-arcade-toolbox](https://github.com/galt-tr/go-arcade-toolbox). Any conforming BRC-100 wallet can
+take its place.
+
+**[docs/wallet-conformance.md](docs/wallet-conformance.md) is the specification** — transport,
+authentication digests, the six deal methods, the two signing gates, the cryptographic requirements,
+and a conformance checklist. Read it if you are implementing a wallet that plays this game.
+
 ## Source repositories
 
 This project is a rewrite, not a fork. Two upstream repositories inform it:
