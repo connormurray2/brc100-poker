@@ -76,6 +76,40 @@ liveness is gone.
 **A single-hand n-of-n pot with a timelocked refund cannot be incentive-compatible.** The loser
 always holds a free option to stall. This is a structural property, not a parameter to tune.
 
+## 4b. What the original implementation did
+
+The project this game descends from ([prof-faustus/bsv-poker](https://github.com/prof-faustus/bsv-poker))
+faced the same problem and is explicit about not solving it. From its `FORMAL_SECURITY.md`:
+
+> **Liveness vs. punishment.** A withholding peer triggers an *accountable abort* → unilateral
+> nLockTime / 2-of-2 escrow recovery, so **no honest player loses funds**. On-chain economic
+> *penalty* for a griefer (stake slashing) is **not** claimed.
+
+So it claims exactly what we can claim — nobody loses funds — and explicitly disclaims the part we
+were missing, a penalty for stalling.
+
+Its recovery is the stake-back design, confirmed in `Chain.BuildEscrowRecovery`:
+
+```csharp
+var outs = new List<TxOut> {
+    new(stakeA, P2pkhLockForPub(pubA)),
+    new(stakeB - fee, P2pkhLockForPub(pubB))
+};
+```
+
+One transaction, each funder's own stake, co-signed **before** the escrow is funded. That is
+strictly better than what this project does today — we build one refund *per seat* paying that seat
+the *whole pot*, which adds a first-broadcast race and a windfall on top of the shared flaw.
+
+Two conclusions worth separating:
+
+1. **We are worse than the original and should fix that.** Stake-back removes the race and the
+   windfall. It does not make signing rational, but it takes the profit out of stalling: a refusing
+   loser recovers their own buy-in rather than winning the pot.
+2. **Neither implementation makes stalling irrational**, and the original says so plainly rather
+   than implying otherwise. A losing seat still prefers its stake back to zero. Treating that as
+   solved would be the mistake.
+
 ## 5. What would actually work
 
 **Session-spanning pots.** Buy in once for many hands, as an online poker site does. Refusing to
