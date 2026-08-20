@@ -58,8 +58,14 @@ func VerifyProposal(p Proposal, want Expectation) error {
 	if want.PotTxid == "" {
 		return errors.New("cosign: the expectation names no pot")
 	}
-	if len(want.Payouts) == 0 {
-		return errors.New("cosign: the expectation names no payouts; refusing to sign a settlement that pays nobody")
+	// An expectation may legitimately name no payouts: a seat that won nothing cannot derive
+	// any script it is owed, because deriving another seat's payout needs the sender's private
+	// key. Such a seat is not unprotected -- it still requires the settlement to spend the pot
+	// it funded, to declare no output beyond the pot's value, and to stay inside the fee bound.
+	// What it cannot do is police how the winnings are split, which cannot cost it anything
+	// since it was owed none of them.
+	if len(want.Payouts) == 0 && want.MaxFee == 0 {
+		return errors.New("cosign: an expectation with no payouts needs a fee bound, or nothing constrains the settlement")
 	}
 
 	// The proposal must spend the pot this seat funded, and nothing else.
@@ -113,8 +119,14 @@ func VerifyProposal(p Proposal, want Expectation) error {
 	// Anything left over is an output the hand's outcome does not account for. A change
 	// output back to the funder is legitimate but must be declared in the expectation,
 	// precisely so it cannot be used to skim the pot.
-	for key, sats := range got {
-		return fmt.Errorf("cosign: the settlement contains an unexpected output of %d sat to %s…", sats, truncateScript(key))
+	// An output the expectation does not name is only a problem when the expectation is
+	// complete. A seat that derived no payouts cannot name the winner's output, so requiring it
+	// to would make every losing seat refuse to settle. The value bound below is what protects
+	// such a seat: nothing can leave the pot beyond its declared total and fee.
+	if len(want.Payouts) > 0 {
+		for key, sats := range got {
+			return fmt.Errorf("cosign: the settlement contains an unexpected output of %d sat to %s…", sats, truncateScript(key))
+		}
 	}
 
 	// Value must be conserved within the declared fee bound.

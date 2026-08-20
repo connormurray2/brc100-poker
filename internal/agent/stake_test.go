@@ -166,3 +166,62 @@ func newTestAgent(t *testing.T) *Agent {
 	}
 	return a
 }
+
+// The bug players hit twice: a settlement paying another seat was declined with "does not pay the
+// expected recipient".
+//
+// The wallet derived OTHER seats' payout scripts with its own key as sender, while the table
+// derives with the table's key. Different senders produce different scripts, so the expectation
+// could never be satisfied whenever another seat won -- which heads-up is half of all hands.
+//
+// A seat cannot derive another seat's script: that needs the sender's private key. So it must
+// record only its own, and rely on the pot outpoint and fee bound for the rest.
+func TestExpectationOmitsPayoutsThisWalletCannotDerive(t *testing.T) {
+	senderPriv, err := ec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := ec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := newTestAgent(t)
+
+	// A hand another seat won: the only payout goes to someone else.
+	body, err := json.Marshal(recordStakeParams{
+		HandID:            "loser-hand",
+		PotTxid:           "aa" + strings.Repeat("00", 31),
+		PotSatoshis:       10000,
+		PotScriptHex:      "51",
+		Seat:              0,
+		SenderIdentityKey: senderPriv.PubKey().ToDERHex(),
+		Payouts: []recordStakePayout{{
+			RecipientKey: other.PubKey().ToDERHex(),
+			Satoshis:     9700,
+			Prefix:       base64.StdEncoding.EncodeToString([]byte("loser-hand")),
+			Suffix:       base64.StdEncoding.EncodeToString([]byte("seat-1")),
+		}},
+		MaxFee:      500,
+		RefundTxHex: "0100000000",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := a.handleRecordStake(nil, body)
+	if err != nil {
+		t.Fatalf("a losing seat could not record its stake: %v", err)
+	}
+	out := res.(recordStakeResult)
+	// The wallet must NOT have invented a script for the other seat's payout. Recording one
+	// derived with its own key is exactly what made settlement impossible.
+	if len(out.Payouts) != 0 {
+		t.Fatalf("the wallet derived %d payout script(s) it cannot verify: %v",
+			len(out.Payouts), keysOf(out.Payouts))
+	}
+
+	// And the stake is still recorded, so the seat can sign.
+	if _, ok := a.Stake("loser-hand"); !ok {
+		t.Fatal("no stake was recorded, so this seat could never sign a settlement")
+	}
+}

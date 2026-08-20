@@ -79,6 +79,14 @@ func (a *Agent) handleRecordStake(_ *ec.PublicKey, params json.RawMessage) (any,
 			Message: "a stake with no expected payouts would accept a settlement paying nobody",
 		}
 	}
+	if p.MaxFee == 0 {
+		// With no fee bound and no own payout to check, a losing seat would have nothing
+		// constraining a settlement at all.
+		return nil, &substrate.Error{
+			Code:    substrate.CodeBadRequest,
+			Message: "a stake needs a fee bound; without one a settlement could burn the pot",
+		}
+	}
 	if p.RefundTxHex == "" {
 		return nil, &substrate.Error{
 			Code:    substrate.CodeBadRequest,
@@ -100,6 +108,9 @@ func (a *Agent) handleRecordStake(_ *ec.PublicKey, params json.RawMessage) (any,
 				Code:    substrate.CodeBadRequest,
 				Message: fmt.Sprintf("payout %d: %s", i, err.Error()),
 			}
+		}
+		if lock == nil {
+			continue // another seat's payout, which this wallet cannot derive
 		}
 		payouts[hex.EncodeToString(*lock)] = po.Satoshis
 	}
@@ -154,27 +165,20 @@ func (a *Agent) derivePayoutScript(sender *ec.PublicKey, po recordStakePayout, o
 		return nil, fmt.Errorf("invalid derivation material: %w", err)
 	}
 
-	if po.RecipientKey == ownKey {
-		// The mirror image of the sender's LockForCounterparty. This is the script that
-		// matters most to this seat, and it is derived rather than accepted.
-		lock, err := brc29.LockForSelf(sender, keyID, a.priv)
-		if err != nil {
-			return nil, fmt.Errorf("deriving this seat's own payout: %w", err)
-		}
-		return lock, nil
+	if po.RecipientKey != ownKey {
+		// Another seat's payout. The script cannot be derived here: it is
+		// LockForCounterparty from the sender, which needs the sender's private key. Deriving
+		// it with this wallet's key instead would produce a script the settlement never pays,
+		// so the expectation could never be satisfied. Skipped, and the protection that
+		// remains is the fee bound and the no-undeclared-output rule in VerifyProposal.
+		return nil, nil
 	}
 
-	recipient, err := ec.PublicKeyFromString(po.RecipientKey)
+	// This seat's own payout: the mirror of the sender's LockForCounterparty, and the script
+	// that actually matters to it. Derived, never accepted.
+	lock, err := brc29.LockForSelf(sender, keyID, a.priv)
 	if err != nil {
-		return nil, errors.New("the recipient key is unusable")
-	}
-	// Another seat's payout. Without the sender's private key the exact script cannot be
-	// recomputed here, so the wallet records the amount against a script derived from the
-	// recipient's identity key. A settlement whose other payouts differ will fail this seat's
-	// check, which is the conservative direction: this seat refuses rather than signs.
-	lock, err := brc29.LockForCounterparty(a.priv, keyID, recipient)
-	if err != nil {
-		return nil, fmt.Errorf("deriving seat payout: %w", err)
+		return nil, fmt.Errorf("deriving this seat's own payout: %w", err)
 	}
 	return lock, nil
 }

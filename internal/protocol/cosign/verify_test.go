@@ -200,10 +200,19 @@ func TestVerifyProposalValidation(t *testing.T) {
 	if err := VerifyProposal(p, Expectation{}); err == nil {
 		t.Error("accepted an expectation naming no pot")
 	}
+	// An expectation with no payouts is legitimate for a seat that won nothing: it cannot
+	// derive another seat's payout script, because that needs the sender's private key. Such a
+	// seat is still protected by the pot outpoint and the fee bound, so it may sign.
 	noPayouts := good
 	noPayouts.Payouts = nil
-	if err := VerifyProposal(p, noPayouts); err == nil {
-		t.Error("accepted an expectation with no payouts")
+	if err := VerifyProposal(p, noPayouts); err != nil {
+		t.Errorf("a losing seat with a fee bound could not sign: %v", err)
+	}
+	// With neither payouts nor a fee bound, nothing constrains the settlement at all.
+	unbounded := noPayouts
+	unbounded.MaxFee = 0
+	if err := VerifyProposal(p, unbounded); err == nil {
+		t.Error("accepted an expectation with neither payouts nor a fee bound")
 	}
 	bad := settlement(t, winner, 4800, nil, 0)
 	bad.PotInput = 9
