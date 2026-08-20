@@ -112,7 +112,7 @@ func (m *PotManager) OpenPot(ctx context.Context, handID string, seats []AgentEn
 		if err != nil {
 			return nil, fmt.Errorf("webui: building seat %d's refund: %w", s.Seat, err)
 		}
-		sigs, err := m.collectSignatures(ctx, handID, refund, 0, seats)
+		sigs, err := m.collectRefundSignatures(ctx, handID, refund, 0, seats, pot, s.IdentityKey)
 		if err != nil {
 			return nil, fmt.Errorf("webui: signing seat %d's refund: %w", s.Seat, err)
 		}
@@ -331,4 +331,64 @@ func (m *PotManager) RefundFor(handID string, seat int) (string, uint32, bool) {
 		return "", 0, false
 	}
 	return hex.EncodeToString(tx.Bytes()), lp.lockHeight, true
+}
+
+// collectRefundSignatures asks every seat to sign one seat's refund.
+//
+// Refunds use signRefund rather than signPot, and that is not a shortcut. A stake cannot be
+// recorded until its refund exists, so requiring a recorded stake to sign a refund would deadlock
+// the table: no refund without a stake, no stake without a refund. signRefund carries its own
+// safety instead -- each wallet verifies the transaction returns the pot to the named seat and
+// refuses otherwise.
+func (m *PotManager) collectRefundSignatures(ctx context.Context, handID string, tx *transaction.Transaction, inputIndex int, seats []AgentEndpoint, pot cosign.FundedPot, beneficiary string) ([]cosign.Signature, error) {
+	if m.coord == nil {
+		return nil, errors.New("webui: no coordinator is configured to reach the seats")
+	}
+	rawHex := hex.EncodeToString(tx.Bytes())
+	potScriptHex := hex.EncodeToString(*pot.Script)
+	tableKeys := make([]string, 0, len(seats))
+	for _, s := range seats {
+		tableKeys = append(tableKeys, s.IdentityKey)
+	}
+
+	sigs := make([]cosign.Signature, 0, len(seats))
+	for _, s := range seats {
+		var out struct {
+			Seat int    `json:"seat"`
+			DER  string `json:"der"`
+		}
+		params := map[string]any{
+			"handId":       handID,
+			"rawTxHex":     rawHex,
+			"potInput":     inputIndex,
+			"potTxid":      pot.Txid,
+			"potVout":      pot.Vout,
+			"potSatoshis":  pot.Satoshis,
+			"potScriptHex": potScriptHex,
+			"seat":         s.Seat,
+			"beneficiary":  beneficiary,
+			"seats":        tableKeys,
+			// The fee this refund consumes. BuildRefund pays out the pot less 300, so the
+			// bound must admit that and no more.
+			"maxFee": uint64(400),
+		}
+		if err := m.coord.call(ctx, s, substrate.MethodSignRefund, params, &out); err != nil {
+			return nil, fmt.Errorf("seat %d would not sign: %w", s.Seat, err)
+		}
+		der, err := hex.DecodeString(out.DER)
+		if err != nil {
+			return nil, fmt.Errorf("seat %d returned a non-hex signature: %w", s.Seat, err)
+		}
+		sig := cosign.Signature{Seat: out.Seat, DER: der}
+
+		pub, err := ec.PublicKeyFromString(s.IdentityKey)
+		if err != nil {
+			return nil, fmt.Errorf("seat %d has an unusable identity key: %w", s.Seat, err)
+		}
+		if err := cosign.VerifySignature(tx, inputIndex, sig, pub); err != nil {
+			return nil, fmt.Errorf("seat %d's signature is invalid: %w", s.Seat, err)
+		}
+		sigs = append(sigs, sig)
+	}
+	return sigs, nil
 }

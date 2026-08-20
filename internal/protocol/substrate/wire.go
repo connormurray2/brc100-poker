@@ -66,6 +66,14 @@ const (
 	// MethodDealCard asks a seat's own agent to identify a card it can read.
 	MethodDealCard Method = "dealCard"
 
+	// MethodSignRefund signs a refund that returns a pot to this seat.
+	//
+	// Distinct from signPot because its safety is self-contained: the wallet verifies the
+	// transaction pays the pot back to a script only it can spend, and refuses otherwise. It
+	// therefore needs no prior record of the hand -- which matters, because a stake cannot be
+	// recorded until its refund exists, and gating the refund on the stake would deadlock.
+	MethodSignRefund Method = "signRefund"
+
 	// MethodRecordStake tells a wallet which pot its stake went into, so it can verify a
 	// later settlement against its own record rather than the table's word.
 	//
@@ -85,7 +93,7 @@ func (m Method) Known() bool {
 	switch m {
 	case MethodGetPublicKey, MethodGetNetwork, MethodCreateAction, MethodSignAction,
 		MethodInternalizeAction, MethodListOutputs, MethodListActions, MethodSignPot,
-		MethodRecordStake,
+		MethodRecordStake, MethodSignRefund,
 		MethodDealCommit, MethodDealShuffle, MethodDealRemask, MethodDealReveal,
 		MethodDealFinal, MethodDealCard:
 		return true
@@ -298,7 +306,8 @@ func TableGrants() Grants {
 	// The deal methods are granted because the table drives the chain: it asks each seat in
 	// turn to apply its pass. The secrets themselves never leave the agent, so granting these
 	// lets the table sequence a deal without ever being able to read a card.
-	g, err := NewGrants(MethodGetPublicKey, MethodGetNetwork, MethodSignPot, MethodInternalizeAction,
+	g, err := NewGrants(MethodGetPublicKey, MethodGetNetwork, MethodSignPot, MethodSignRefund,
+		MethodInternalizeAction,
 		MethodDealCommit, MethodDealShuffle, MethodDealRemask, MethodDealReveal,
 		MethodDealFinal, MethodDealCard)
 	if err != nil {
@@ -312,7 +321,7 @@ func TableGrants() Grants {
 func OwnerGrants() Grants {
 	g, err := NewGrants(MethodGetPublicKey, MethodGetNetwork, MethodCreateAction,
 		MethodSignAction, MethodInternalizeAction, MethodListOutputs, MethodListActions, MethodSignPot,
-		MethodRecordStake,
+		MethodRecordStake, MethodSignRefund,
 		MethodDealCommit, MethodDealShuffle, MethodDealRemask, MethodDealReveal,
 		MethodDealFinal, MethodDealCard)
 	if err != nil {

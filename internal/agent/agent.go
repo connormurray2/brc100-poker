@@ -238,6 +238,11 @@ func (a *Agent) registerHandlers() error {
 	if err := a.server.HandleMethod(substrate.MethodRecordStake, a.handleRecordStake); err != nil {
 		return err
 	}
+	// Granted to the table, unlike recordStake: the table assembles each seat's refund, and
+	// the wallet's own verification is what makes signing one safe.
+	if err := a.server.HandleMethod(substrate.MethodSignRefund, a.handleSignRefund); err != nil {
+		return err
+	}
 	if err := a.server.HandleMethod(substrate.MethodInternalizeAction, a.handleInternalize); err != nil {
 		return err
 	}
