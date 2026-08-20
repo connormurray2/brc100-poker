@@ -222,6 +222,17 @@ func (l *LiveTable) dealLocked() error {
 
 // buildDeckLocked produces the hand's cards, dealerlessly when every seat has an agent.
 //
+// UPGRADE PATH — read docs/wallet-native-deal.md before changing this.
+//
+// A dealerless deal here still depends on masking scalars held outside the player's BRC-100 wallet,
+// because stripping a mask needs multiplication by the modular inverse of a derived key and no
+// BRC-100 method exposes that. Masking alone is already possible over the interface; stripping is
+// the gap. Tracked upstream in bsv-blockchain/ts-stack#488 and bsv-blockchain/BRCs#230.
+//
+// When a wallet ships the capability, this does NOT need restructuring: feature-detect
+// multiplyPoint and route mask/strip through the wallet, keeping this path as the fallback for
+// wallets that lack it. The algebra is identical either way.
+//
 // The engine needs a concrete ordered deck, so a coordinated deal is flattened into one: each
 // seat's own cards first in seat order, then the board, matching how the engine consumes them. The
 // coordinator only ever learns a seat's cards because that seat's agent read them and reported

@@ -8,6 +8,19 @@
 // hand-rolled. Upstream implemented its own Montgomery ladder over big.Int and documented
 // honestly that it was not constant-time; using the library's implementation removes that
 // concern from our surface.
+//
+// WHY THE SCALARS ARE HERE AND NOT IN THE WALLET — see docs/wallet-native-deal.md.
+//
+// Masking scalars are generated in this process rather than inside the player's BRC-100 wallet.
+// That is not the preferred design; it is what the wallet interface currently permits. Masking a
+// point through BRC-100 is already possible, but STRIPPING a mask requires multiplication by the
+// modular inverse of a derived key, and no method exposes that. Tracked in
+// bsv-blockchain/ts-stack#488 and bsv-blockchain/BRCs#230.
+//
+// These scalars mask cards. They cannot move money: the pot is n-of-n multisig and every
+// settlement input is signed by a seat's own wallet. They are per-hand and discarded with the
+// hand, so a leak exposes one hand's cards rather than funds. Keep it that way -- never reuse a
+// masking scalar across hands, and never derive one from anything a wallet also uses.
 package mentalpoker
 
 import (

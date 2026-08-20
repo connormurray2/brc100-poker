@@ -19,6 +19,23 @@ stating up front: **every seat must be online to settle a hand.** The backstop i
 player holds a fully-signed refund of their own stake *before* funding, so an uncooperative or
 absent seat costs everyone a wait, never their money.
 
+### One honest exception: the deal, not the money
+
+No custody applies to **funds** without qualification: every satoshi is signed by the player's own
+BRC-100 wallet. The *deal* is a different story. A dealerless deal needs each player to mask cards
+and later strip their own mask, and no BRC-100 method can strip a mask today — it requires
+multiplying a point by the modular inverse of a derived key, which the wallet interface does not
+expose. So per-hand masking scalars currently live in the application.
+
+Those scalars mask cards; they cannot move money, and they are discarded when the hand ends. But it
+is a weaker trust story than a wallet-native deal, and it is temporary by design.
+
+**Read [docs/wallet-native-deal.md](docs/wallet-native-deal.md)** before touching the deal path. It
+records exactly what is missing, the upstream PRs tracking it
+([ts-stack#488](https://github.com/bsv-blockchain/ts-stack/pull/488),
+[BRCs#230](https://github.com/bsv-blockchain/BRCs/pull/230)), the code that has to change in the SDK
+*and in BSV Desktop*, and the traps already paid for.
+
 ## Source repositories
 
 This project is a rewrite, not a fork. Two upstream repositories inform it:
