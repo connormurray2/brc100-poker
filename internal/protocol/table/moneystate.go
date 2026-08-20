@@ -59,9 +59,13 @@ type MoneyState struct {
 	PayoutSatoshis uint64 `json:"payoutSatoshis,omitempty"`
 	// SettlementTxID identifies the settlement, so a player can check it independently.
 	SettlementTxID string `json:"settlementTxid,omitempty"`
-	// PayoutSpendable reports whether the payout has been received into the player's wallet.
-	// Broadcasting is not receiving: a payout needs a merkle proof before it can be
-	// internalized, and only then can it be spent.
+	// PayoutSpendable reports whether the payout has been internalized into the player's own
+	// wallet, meaning the wallet tracks it as a spendable output.
+	//
+	// This is a bookkeeping state, not a consensus one. BSV has no maturity rule for ordinary
+	// outputs: a broadcast payout is spendable immediately, and a wallet can chain a spend off
+	// an unconfirmed parent. What this flag records is whether the wallet has been told about
+	// the output yet, which is why a player can be told the hand settled before it flips.
 	PayoutSpendable bool `json:"payoutSpendable"`
 
 	// StalledSeat is the seat responsible for a stall, or -1.
@@ -93,7 +97,9 @@ func (m MoneyState) Summary() string {
 			return "Hand settled. You did not win this pot."
 		}
 		if !m.PayoutSpendable {
-			return fmt.Sprintf("Hand settled, %d sat to you. Not spendable until the settlement is mined.",
+			// Deliberately not "not spendable yet": the coin is spendable the moment the
+			// settlement is broadcast. What is pending is this wallet recording it.
+			return fmt.Sprintf("Hand settled, %d sat to you. Broadcast and spendable; your wallet is still recording it.",
 				m.PayoutSatoshis)
 		}
 		return fmt.Sprintf("Hand settled, %d sat received and spendable.", m.PayoutSatoshis)
@@ -251,11 +257,11 @@ func (t *MoneyTracker) Settled(txid string, payouts map[int]uint64) {
 	}
 }
 
-// PayoutReceived records that a seat's payout is spendable in its own wallet.
+// PayoutReceived records that a seat's wallet has internalized its payout.
 //
-// Separate from Settled because broadcasting is not receiving: a payout needs a merkle proof before
-// it can be internalized, and a player told "settled" while the coin is not yet spendable would
-// reasonably think something is wrong.
+// Separate from Settled because broadcasting is not bookkeeping: the coin is spendable as soon as
+// the settlement is broadcast, but a wallet cannot spend an output it does not know about. This
+// tracks the wallet catching up, not the chain.
 func (t *MoneyTracker) PayoutReceived(seat int) error {
 	return t.update(seat, func(s *MoneyState) error {
 		s.PayoutSpendable = true

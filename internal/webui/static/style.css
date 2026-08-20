@@ -244,3 +244,31 @@ label[for] { font-size: 0.85rem; color: var(--muted); margin-right: 0.2rem; }
   background: rgba(251,191,36,0.08);
   border-radius: 6px; padding: 0.6rem 0.75rem; color: #fde68a;
 }
+
+/* Whose turn it is. This was a small badge among several and players missed it, so it gets its
+   own line above the felt, and a colour that distinguishes "you" from "someone else". */
+.turnBanner {
+  margin: 0.9rem 0 0.2rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: 8px;
+  font-size: 1rem;
+  font-weight: 600;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--muted);
+}
+.turnBanner.mine {
+  border-color: var(--accent);
+  background: rgba(74,222,128,0.13);
+  color: #bbf7d0;
+}
+.turnBanner.waiting {
+  border-color: rgba(251,191,36,0.35);
+  background: rgba(251,191,36,0.08);
+  color: #fde68a;
+}
+/* The seat to act needs to be findable at a glance, not inferred from a badge. */
+.seat.toact {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent) inset;
+}

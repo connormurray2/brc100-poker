@@ -112,7 +112,7 @@ func TestSettledIsNotTheSameAsSpendable(t *testing.T) {
 	if winner.PayoutSpendable {
 		t.Error("a settled payout was reported spendable before it was received")
 	}
-	if !strings.Contains(winner.Summary(), "Not spendable until") {
+	if !strings.Contains(winner.Summary(), "Broadcast and spendable") {
 		t.Errorf("the summary does not warn that the payout is not yet spendable: %q", winner.Summary())
 	}
 

@@ -159,6 +159,11 @@ func run() error {
 	live.SetCoordinator(coord)
 	ui.SetLive(live)
 
+	// A table keeps dealing until a player leaves, so the session driver runs for the life of
+	// the process. Six seconds between hands is long enough to read a showdown without making
+	// the table feel stalled.
+	go live.RunHands(ctx, 6*time.Second, logger)
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("/livez", reporter.LivenessHandler())
 	mux.HandleFunc("/readyz", reporter.ReadinessHandler())

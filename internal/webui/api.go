@@ -365,6 +365,28 @@ func (s *Store) Handler(identityKey, version, network string) http.Handler {
 	// wallet this process cannot dial. The browser is a pipe: every request it collects is
 	// already signed by the table and addressed to one seat, and every response it returns is
 	// signed by that seat's wallet, so tampering is detected at the ends rather than trusted.
+	// /api/sitout ends a player's session. A table keeps dealing until someone leaves, so this
+	// is how a session stops.
+	mux.HandleFunc("/api/sitout", func(w http.ResponseWriter, r *http.Request) {
+		live := s.Live()
+		if live == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "no playable table"})
+			return
+		}
+		var req struct {
+			IdentityKey string `json:"identityKey"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&req); err != nil {
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "body is not valid JSON"})
+			return
+		}
+		if err := live.SitOut(req.IdentityKey); err != nil {
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	})
+
 	mux.HandleFunc("/api/relay/poll", func(w http.ResponseWriter, r *http.Request) {
 		var req struct {
 			IdentityKey string `json:"identityKey"`

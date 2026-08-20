@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -49,6 +50,18 @@ type LiveTable struct {
 	// dealerless records whether the completed deal ran through agents, so the UI can say so
 	// rather than leaving a player to assume.
 	dealerless bool
+
+	// handNo counts hands played this session, so each deal gets a distinct hand ID. Reusing
+	// one would let a wallet's replay cache reject the second hand's requests.
+	handNo int
+	// button is the dealer position, rotated between hands so the blinds move.
+	button int
+	// stacks carries chips between hands. A session is a sequence of hands with the same
+	// money, not a series of independent buy-ins.
+	stacks []int64
+	// sitting out records seats that asked to leave; they are dealt out and the table stops
+	// when too few remain.
+	sittingOut map[int]bool
 
 	now func() time.Time
 }
@@ -180,10 +193,17 @@ func (l *LiveTable) Ready(identityKey string) error {
 }
 
 func (l *LiveTable) dealLocked() error {
-	stacks := make([]int64, len(l.seats))
-	for i := range stacks {
-		stacks[i] = int64(l.terms.BuyInSatoshis)
+	// Stacks carry between hands. The first hand starts everyone at the buy-in; later hands
+	// inherit whatever the previous one left, which is what makes this a session rather than a
+	// sequence of unrelated hands.
+	if l.stacks == nil {
+		l.stacks = make([]int64, len(l.seats))
+		for i := range l.stacks {
+			l.stacks[i] = int64(l.terms.BuyInSatoshis)
+		}
 	}
+	stacks := make([]int64, len(l.stacks))
+	copy(stacks, l.stacks)
 
 	// Prefer a dealerless deal: every seat holds its own secrets and nothing here can read a
 	// card. Only fall back to a local shuffle when a seat has no agent, and say so.
@@ -194,7 +214,7 @@ func (l *LiveTable) dealLocked() error {
 
 	st, err := engine.New(engine.Config{
 		Stacks:     stacks,
-		Button:     0,
+		Button:     l.button,
 		SmallBlind: int64(l.terms.SmallBlind),
 		BigBlind:   int64(l.terms.BigBlind),
 		Deck:       deck,
@@ -318,8 +338,98 @@ func (l *LiveTable) Act(identityKey, action string, to int64) error {
 			payouts[s] = uint64(v)
 		}
 		l.money.Settled("", payouts)
+		l.finishHandLocked()
 	}
 	return nil
+}
+
+// finishHandLocked records the result of a completed hand against the session.
+//
+// It does not deal the next one. Dealing runs a full round trip to every seat's wallet, which can
+// take seconds, and doing that while holding the table lock inside an action handler would block
+// every other player's poll. NextHand does it, driven from outside the lock.
+func (l *LiveTable) finishHandLocked() {
+	// Carry the resulting stacks forward. The engine's seat stacks already reflect the payouts.
+	if l.stacks == nil || len(l.stacks) != len(l.st.Seats) {
+		l.stacks = make([]int64, len(l.st.Seats))
+	}
+	for i, s := range l.st.Seats {
+		l.stacks[i] = s.Stack
+	}
+	l.handNo++
+	// Move the button so the blinds rotate; a fixed button would tax the same seat every hand.
+	if n := len(l.seats); n > 0 {
+		l.button = (l.button + 1) % n
+	}
+}
+
+// HandOver reports whether a hand has finished and the table is ready to deal another.
+func (l *LiveTable) HandOver() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.st != nil && l.st.Done
+}
+
+// SitOut takes a seat out of the game. That seat is dealt out of subsequent hands.
+//
+// A player leaving is the only thing that stops a session, so this is how a table ends.
+func (l *LiveTable) SitOut(identityKey string) error {
+	key := strings.ToLower(strings.TrimSpace(identityKey))
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	seat, ok := l.seatOf[key]
+	if !ok {
+		return errors.New("webui: this identity holds no seat")
+	}
+	if l.sittingOut == nil {
+		l.sittingOut = make(map[int]bool)
+	}
+	l.sittingOut[seat] = true
+	return nil
+}
+
+// SittingOut reports whether a seat has left the game.
+func (l *LiveTable) SittingOut(seat int) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.sittingOut[seat]
+}
+
+// NextHand deals the following hand of a session.
+//
+// Refuses unless the previous hand is genuinely finished, so a caller cannot cut a hand short by
+// asking for another. Returns false when the table should stop: a seat has left, or a seat has no
+// chips and cannot post a blind.
+func (l *LiveTable) NextHand() (bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if l.st == nil || !l.st.Done {
+		return false, nil
+	}
+	for seat := range l.sittingOut {
+		if l.sittingOut[seat] {
+			return false, nil
+		}
+	}
+	// A seat that cannot cover the big blind cannot be dealt in, and a heads-up table with one
+	// such seat has nothing left to play for. Stopping is the honest outcome; silently dealing a
+	// hand nobody can bet in is not.
+	for _, stack := range l.stacks {
+		if stack < int64(l.terms.BigBlind) {
+			return false, nil
+		}
+	}
+
+	// A fresh hand ID per hand. Wallets cache nonces against replay, and a repeated hand ID
+	// would make the second hand's deal requests look like replays of the first.
+	l.money.SetHand(fmt.Sprintf("%s-h%d", l.id, l.handNo))
+	l.hole = make(map[int][]cards.Card, len(l.seats))
+	l.st = nil
+	if err := l.dealLocked(); err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 func parseAction(a string) (engine.ActionKind, error) {
@@ -471,4 +581,45 @@ func cardStrings(cs []cards.Card) []string {
 		out = append(out, c.String())
 	}
 	return out
+}
+
+// RunHands deals hand after hand until the table stops.
+//
+// Started once when a session begins. It waits for the current hand to finish, pauses so players
+// can read the result, then deals the next. A dealing failure stops the session rather than
+// retrying: a deal that cannot complete usually means a seat's wallet has gone, and spinning on it
+// would bury the reason under repeated identical errors.
+func (l *LiveTable) RunHands(ctx context.Context, settle time.Duration, log *slog.Logger) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(500 * time.Millisecond):
+		}
+		if !l.HandOver() {
+			continue
+		}
+		// Let players see the showdown before the table moves on.
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(settle):
+		}
+		dealt, err := l.NextHand()
+		if err != nil {
+			if log != nil {
+				log.Error("the next hand could not be dealt; the session stops here", "error", err)
+			}
+			return
+		}
+		if !dealt {
+			if log != nil {
+				log.Info("the session ended: a seat left or is out of chips")
+			}
+			return
+		}
+		if log != nil {
+			log.Info("dealt the next hand", "table", l.id)
+		}
+	}
 }

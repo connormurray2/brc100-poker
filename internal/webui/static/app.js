@@ -363,6 +363,29 @@ async function refresh() {
     result.hidden = false;
   } else result.hidden = true;
 
+  // Say whose turn it is in words, above the felt. A badge on a seat row was too easy to miss,
+  // and a player who cannot tell whether they are holding up the table will sit and wait.
+  const banner = el('turnBanner');
+  if (v.phase === 'hand complete') {
+    banner.hidden = false;
+    banner.className = 'turnBanner';
+    banner.textContent = 'Hand complete. The next hand starts in a few seconds.';
+  } else if (legal.yourTurn) {
+    banner.hidden = false;
+    banner.className = 'turnBanner mine';
+    banner.textContent = 'Your turn — everyone is waiting on you.';
+  } else if (typeof v.toAct === 'number' && v.toAct >= 0) {
+    banner.hidden = false;
+    banner.className = 'turnBanner waiting';
+    banner.textContent = `Waiting for seat ${v.toAct}${v.toAct === mySeat ? ' (you)' : ''}…`;
+  } else if (v.phase) {
+    banner.hidden = false;
+    banner.className = 'turnBanner';
+    banner.textContent = v.phase.charAt(0).toUpperCase() + v.phase.slice(1) + '…';
+  } else {
+    banner.hidden = true;
+  }
+
   // Offer exactly the actions the engine says are legal. Offering one it will refuse is worse
   // than offering none: the player clicks, is told no, and learns nothing.
   const bar = el('actions');
@@ -437,3 +460,13 @@ loadInfo();
 // Poll rather than stream: a dropped socket that silently stops updating is worse than a poll that
 // visibly fails, and this view is small.
 setInterval(refresh, 2000);
+
+el('sitOut').addEventListener('click', async () => {
+  if (!confirm('Get up from the table? The session ends after the current hand.')) return;
+  try {
+    await postJSON('/api/sitout', { identityKey });
+    setStatus('seatStatus', 'You are getting up. The table stops after this hand.', 'ok');
+  } catch (e) {
+    setStatus('seatStatus', e.message, 'bad');
+  }
+});
