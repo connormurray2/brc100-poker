@@ -167,3 +167,47 @@ func TestSessionStopsWhenASeatCannotCoverTheBigBlind(t *testing.T) {
 		t.Fatal("the table dealt a hand a seat could not post a blind for")
 	}
 }
+
+// The regression a player actually hit: consecutive hands dealt identical cards.
+//
+// This goes through LiveTable rather than calling the coordinator directly, because the bug was
+// in what LiveTable passed as the hand ID. A test that calls Deal itself cannot catch it.
+func TestSessionHandIDChangesEveryHand(t *testing.T) {
+	l, _ := sessionTable(t)
+
+	seen := map[string]int{}
+	for hand := 0; hand < 3; hand++ {
+		id := func() string {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			return l.handIDLocked()
+		}()
+		if prev, dup := seen[id]; dup {
+			t.Fatalf("hand %d reused the ID from hand %d: %q -- every seat's wallet would "+
+				"return its cached secrets and deal the identical hand", hand, prev, id)
+		}
+		seen[id] = hand
+
+		// Fold to finish the hand.
+		l.mu.Lock()
+		toAct := l.st.ToAct
+		l.mu.Unlock()
+		var folder string
+		for k, seat := range l.seatOf {
+			if seat == toAct {
+				folder = k
+			}
+		}
+		if err := l.Act(folder, "fold", 0); err != nil {
+			t.Fatalf("hand %d fold: %v", hand, err)
+		}
+		if hand < 2 {
+			if dealt, err := l.NextHand(); err != nil || !dealt {
+				t.Fatalf("hand %d did not lead to another: dealt=%v err=%v", hand, dealt, err)
+			}
+		}
+	}
+	if len(seen) != 3 {
+		t.Fatalf("three hands produced %d distinct IDs", len(seen))
+	}
+}

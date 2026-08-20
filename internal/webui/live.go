@@ -192,6 +192,16 @@ func (l *LiveTable) Ready(identityKey string) error {
 	return l.dealLocked()
 }
 
+// handIDLocked is the identifier for the hand about to be played.
+//
+// It must change every hand. A seat's wallet caches its deal secrets per hand ID and deliberately
+// returns the existing ones if asked to commit twice -- that is what stops a seat re-rolling its
+// secrets after seeing another seat's contribution. Passing a constant therefore does not merely
+// look wrong, it deals the identical hand forever.
+func (l *LiveTable) handIDLocked() string {
+	return fmt.Sprintf("%s-h%d", l.id, l.handNo)
+}
+
 func (l *LiveTable) dealLocked() error {
 	// Stacks carry between hands. The first hand starts everyone at the buy-in; later hands
 	// inherit whatever the previous one left, which is what makes this a session rather than a
@@ -283,7 +293,7 @@ func (l *LiveTable) buildDeckLocked() ([]cards.Card, bool, map[int][]cards.Card,
 	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
 	defer cancel()
 
-	dealt, err := l.coord.Deal(ctx, l.id, endpoints, 2)
+	dealt, err := l.coord.Deal(ctx, l.handIDLocked(), endpoints, 2)
 	if err != nil {
 		// A failed deal is not silently downgraded to a dealt one: a player who was told
 		// the hand is dealerless must not get a dealer instead.
@@ -423,7 +433,7 @@ func (l *LiveTable) NextHand() (bool, error) {
 
 	// A fresh hand ID per hand. Wallets cache nonces against replay, and a repeated hand ID
 	// would make the second hand's deal requests look like replays of the first.
-	l.money.SetHand(fmt.Sprintf("%s-h%d", l.id, l.handNo))
+	l.money.SetHand(l.handIDLocked())
 	l.hole = make(map[int][]cards.Card, len(l.seats))
 	l.st = nil
 	if err := l.dealLocked(); err != nil {

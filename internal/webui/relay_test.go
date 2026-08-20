@@ -174,3 +174,56 @@ func TestRelayCollectsEachRequestOnce(t *testing.T) {
 		t.Fatalf("the same request was handed out twice")
 	}
 }
+
+// Two hands in a row must not deal the same cards.
+//
+// This is the bug a player found: the coordinator was passed the table ID instead of a per-hand
+// ID, and a wallet deliberately returns its existing secrets when asked to commit twice for the
+// same hand -- which is what stops a seat re-rolling after seeing another seat's contribution. A
+// constant ID therefore dealt the identical hand every time.
+func TestConsecutiveHandsDealDifferentCards(t *testing.T) {
+	tableKey, err := ec.NewPrivateKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ags := startAgents(t, 2, tableKey)
+	coord, err := NewCoordinator(tableKey, "table.poker.local")
+	if err != nil {
+		t.Fatal(err)
+	}
+	endpoints := make([]AgentEndpoint, 0, len(ags))
+	for _, a := range ags {
+		endpoints = append(endpoints, AgentEndpoint{
+			Seat: a.seat, IdentityKey: a.key.PubKey().ToDERHex(), URL: a.url,
+		})
+	}
+
+	fingerprint := func(handID string) string {
+		dealt, err := coord.Deal(context.Background(), handID, endpoints, 2)
+		if err != nil {
+			t.Fatalf("deal %s: %v", handID, err)
+		}
+		out := ""
+		for seat := 0; seat < len(dealt.Hole); seat++ {
+			for _, c := range dealt.Hole[seat] {
+				out += c.String() + ","
+			}
+		}
+		for _, c := range dealt.Board {
+			out += c.String() + ","
+		}
+		return out
+	}
+
+	first := fingerprint("table-h0")
+	second := fingerprint("table-h1")
+	if first == second {
+		t.Fatalf("two hands dealt identical cards: %s", first)
+	}
+
+	// And the guarantee that makes a distinct ID necessary: asking twice for the SAME hand must
+	// reproduce it, because a seat must not be able to re-roll its secrets mid-hand.
+	if again := fingerprint("table-h0"); again != first {
+		t.Fatalf("re-running one hand changed the cards:\n  %s\n  %s", first, again)
+	}
+}
