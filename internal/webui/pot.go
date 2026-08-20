@@ -37,15 +37,35 @@ type PotManager struct {
 	armed map[string]map[int]bool
 }
 
-// livePot is one hand's funded pot.
+// livePot is a session's funded pot.
+//
+// One pot spans many hands. Hands move `balances`; the chain is touched only at buy-in and exit.
+// That is what removes the profit from refusing to settle: a refusing seat recovers its current
+// balance, which is exactly what settling would pay it.
 type livePot struct {
 	pot   cosign.FundedPot
 	seats []*ec.PublicKey
-	// refunds are each seat's fully-signed refund, held before the stake is committed.
-	refunds map[int]*transaction.Transaction
-	// lockHeight is when those refunds mature.
+	// balances is each seat's current holding. Sums to the pot at all times.
+	balances map[int]uint64
+	// refund is the current fully-signed refund, paying every seat its balance. Replaced after
+	// each hand; a seat always holds the latest.
+	refund *transaction.Transaction
+	// lockHeight is when the current refund matures. Decreases with each new refund so the
+	// newest state is spendable first and a stale refund loses the race.
 	lockHeight uint32
+	// floorHeight is where the ladder runs out and the session must settle and reopen.
+	floorHeight uint32
 }
+
+// ladderStep is how much earlier each new refund matures than the one it replaces.
+//
+// Four blocks is enough to make the ordering unambiguous under normal propagation while allowing a
+// useful number of hands before the ladder bottoms out.
+const ladderStep = 4
+
+// refundFee is what a shared refund may consume. It pays one output per seat, so it is larger
+// than a single-recipient refund.
+const refundFee = 500
 
 // NewPotManager builds a pot manager.
 //
@@ -102,45 +122,23 @@ func (m *PotManager) OpenPot(ctx context.Context, handID string, seats []AgentEn
 		return nil, fmt.Errorf("webui: funding the pot: %w", err)
 	}
 
-	// A refund matures well after a hand should have finished, so it is a backstop rather than
-	// a race against settlement.
-	lockHeight := currentHeight + 144
-	lp := &livePot{pot: pot, seats: pubs, refunds: make(map[int]*transaction.Transaction), lockHeight: lockHeight}
+	// One refund paying every seat its own balance, rather than one refund per seat paying
+	// that seat the whole pot. The per-seat form created a first-broadcast race AND rewarded
+	// refusing to settle; see docs/session-pot-design.md.
+	balances := make(map[int]uint64, len(seats))
+	stake := satoshis / uint64(len(seats))
+	for _, s := range seats {
+		balances[s.Seat] = stake
+	}
 
-	// KNOWN FLAW -- see docs/refund-incentive-flaw.md before relying on this for value.
-	//
-	// Each seat's refund returns the whole pot to that seat. That guarantees liveness -- a
-	// vanished seat cannot trap anyone's money -- but it also means a LOSING seat is better off
-	// refusing to sign the settlement: refusing turns the pot into a race it can win, while
-	// signing pays it nothing. A rational loser therefore never settles.
-	//
-	// Paying each seat its own stake back instead would remove the race and the windfall, but
-	// it does NOT make signing rational: a loser who signs gets nothing, and any refund paying
-	// them anything beats that. A single-hand pot with a timelocked refund cannot be
-	// incentive-compatible; the fix is a session-spanning pot, so refusing forfeits a whole
-	// stack rather than one lost hand.
-	for i, s := range seats {
-		refund, err := cosign.BuildRefund(cosign.RefundArgs{
-			Pot: pot, Recipient: pubs[i], Satoshis: satoshis - 300, LockHeight: lockHeight,
-		})
-		if err != nil {
-			return nil, fmt.Errorf("webui: building seat %d's refund: %w", s.Seat, err)
-		}
-		sigs, err := m.collectRefundSignatures(ctx, handID, refund, 0, seats, pot, s.IdentityKey)
-		if err != nil {
-			return nil, fmt.Errorf("webui: signing seat %d's refund: %w", s.Seat, err)
-		}
-		unlock, err := cosign.Assemble(sigs, len(seats))
-		if err != nil {
-			return nil, fmt.Errorf("webui: assembling seat %d's refund: %w", s.Seat, err)
-		}
-		refund.Inputs[0].UnlockingScript = unlock
-		// Verified here rather than trusted: a refund that does not satisfy the pot is worse
-		// than none, because a player would believe they were protected.
-		if err := cosign.VerifyScript(refund, 0, pot.Script, pot.Satoshis); err != nil {
-			return nil, fmt.Errorf("webui: seat %d's refund does not satisfy the pot: %w", s.Seat, err)
-		}
-		lp.refunds[s.Seat] = refund
+	lockHeight := currentHeight + 144
+	lp := &livePot{
+		pot: pot, seats: pubs, balances: balances,
+		lockHeight:  lockHeight,
+		floorHeight: currentHeight + 12, // the ladder must stay comfortably ahead of the tip
+	}
+	if err := m.resignRefund(ctx, handID, lp, seats, lockHeight); err != nil {
+		return nil, err
 	}
 
 	m.mu.Lock()
@@ -343,26 +341,26 @@ func (m *PotManager) StakeFor(handID string, seat int, seats []AgentEndpoint, pa
 			Suffix:       base64.StdEncoding.EncodeToString([]byte(fmt.Sprintf("seat-%d", s.Seat))),
 		})
 	}
-	if tx, ok := lp.refunds[seat]; ok {
-		info.Refunds = map[int]string{seat: hex.EncodeToString(tx.Bytes())}
+	// One shared refund, so every seat is handed the same transaction.
+	if lp.refund != nil {
+		info.Refunds = map[int]string{seat: hex.EncodeToString(lp.refund.Bytes())}
 	}
 	return info, true
 }
 
-// RefundFor returns a seat's signed refund, so a player can be handed the transaction that
-// recovers their stake without depending on this service staying up.
-func (m *PotManager) RefundFor(handID string, seat int) (string, uint32, bool) {
+// RefundFor returns the session's signed refund, so a player holds the transaction that recovers
+// their balance without depending on this service staying up.
+//
+// One transaction for the whole session, not one per seat: it pays every seat its balance, so it
+// does not matter who broadcasts it.
+func (m *PotManager) RefundFor(sessionID string, _ int) (string, uint32, bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	lp, ok := m.pots[handID]
-	if !ok {
+	lp, ok := m.pots[sessionID]
+	if !ok || lp.refund == nil {
 		return "", 0, false
 	}
-	tx, ok := lp.refunds[seat]
-	if !ok {
-		return "", 0, false
-	}
-	return hex.EncodeToString(tx.Bytes()), lp.lockHeight, true
+	return hex.EncodeToString(lp.refund.Bytes()), lp.lockHeight, true
 }
 
 // collectRefundSignatures asks every seat to sign one seat's refund.
@@ -489,4 +487,167 @@ func reserveFee(payouts map[int]uint64, fee uint64) map[int]uint64 {
 	}
 	out[largestSeat] = largest - fee
 	return out
+}
+
+// resignRefund builds and collects signatures for the refund of the current state.
+//
+// Called at buy-in and again after every hand. Each refund matures earlier than the one it
+// replaces, so a seat cannot fall back on an older state that paid it more.
+func (m *PotManager) resignRefund(ctx context.Context, sessionID string, lp *livePot, seats []AgentEndpoint, lockHeight uint32) error {
+	recipients := make([]cosign.RefundOutput, 0, len(seats))
+	for i, s := range seats {
+		amount := lp.balances[s.Seat]
+		if amount == 0 {
+			// A seat with nothing left is omitted: an output of zero is unspendable dust and
+			// would make the balances fail to total the pot.
+			continue
+		}
+		recipients = append(recipients, cosign.RefundOutput{Recipient: lp.seats[i], Satoshis: amount})
+	}
+	if len(recipients) == 0 {
+		return errors.New("webui: no seat holds a balance to refund")
+	}
+
+	refund, err := cosign.BuildRefund(cosign.RefundArgs{
+		Pot: lp.pot, Recipients: recipients, LockHeight: lockHeight, Fee: refundFee,
+	})
+	if err != nil {
+		return fmt.Errorf("webui: building the shared refund: %w", err)
+	}
+
+	sigs, err := m.collectSharedRefundSignatures(ctx, sessionID, refund, 0, seats, lp)
+	if err != nil {
+		return fmt.Errorf("webui: signing the shared refund: %w", err)
+	}
+	unlock, err := cosign.Assemble(sigs, len(seats))
+	if err != nil {
+		return fmt.Errorf("webui: assembling the shared refund: %w", err)
+	}
+	refund.Inputs[0].UnlockingScript = unlock
+	if err := cosign.VerifyScript(refund, 0, lp.pot.Script, lp.pot.Satoshis); err != nil {
+		return fmt.Errorf("webui: the shared refund does not satisfy the pot: %w", err)
+	}
+
+	lp.refund = refund
+	lp.lockHeight = lockHeight
+	if m.log != nil {
+		m.log.Info("refund re-signed for the current balances",
+			"session", sessionID, "lockHeight", lockHeight, "balances", lp.balances)
+	}
+	return nil
+}
+
+// ApplyHand moves the session balances and re-signs the refund for the new state.
+//
+// The refund must be re-signed before the next hand deals, or a seat that loses the next hand
+// could fall back on a refund reflecting the balance it held before this one.
+func (m *PotManager) ApplyHand(ctx context.Context, sessionID string, seats []AgentEndpoint, balances map[int]uint64) error {
+	m.mu.Lock()
+	lp, ok := m.pots[sessionID]
+	m.mu.Unlock()
+	if !ok {
+		return fmt.Errorf("webui: no session pot is open for %s", sessionID)
+	}
+
+	var total uint64
+	for _, v := range balances {
+		total += v
+	}
+	if total != lp.pot.Satoshis {
+		// The balances are the authoritative split of the pot, so they must account for all
+		// of it. A mismatch means the engine and the pot disagree, which must stop the session
+		// rather than settle a number nobody can verify.
+		return fmt.Errorf("webui: balances total %d but the pot holds %d", total, lp.pot.Satoshis)
+	}
+
+	next := lp.lockHeight - ladderStep
+	if next <= lp.floorHeight {
+		return fmt.Errorf("webui: the refund ladder is exhausted at height %d; the session must "+
+			"settle and reopen", lp.lockHeight)
+	}
+
+	m.mu.Lock()
+	lp.balances = balances
+	m.mu.Unlock()
+	return m.resignRefund(ctx, sessionID, lp, seats, next)
+}
+
+// Balances returns the session's current balances.
+func (m *PotManager) Balances(sessionID string) (map[int]uint64, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	lp, ok := m.pots[sessionID]
+	if !ok {
+		return nil, false
+	}
+	out := make(map[int]uint64, len(lp.balances))
+	for k, v := range lp.balances {
+		out[k] = v
+	}
+	return out, true
+}
+
+// collectSharedRefundSignatures asks every seat to sign the shared refund.
+func (m *PotManager) collectSharedRefundSignatures(ctx context.Context, sessionID string, tx *transaction.Transaction, inputIndex int, seats []AgentEndpoint, lp *livePot) ([]cosign.Signature, error) {
+	if m.coord == nil {
+		return nil, errors.New("webui: no coordinator is configured to reach the seats")
+	}
+	rawHex := hex.EncodeToString(tx.Bytes())
+	potScriptHex := hex.EncodeToString(*lp.pot.Script)
+
+	// Every seat is told the whole balance set, so each can verify the refund restores the
+	// state rather than only checking its own share.
+	shares := make([]map[string]any, 0, len(seats))
+	for i, s := range seats {
+		if lp.balances[s.Seat] == 0 {
+			continue
+		}
+		shares = append(shares, map[string]any{
+			"recipientKey": lp.seats[i].ToDERHex(),
+			"satoshis":     lp.balances[s.Seat],
+		})
+	}
+
+	sigs := make([]cosign.Signature, 0, len(seats))
+	for _, s := range seats {
+		var out struct {
+			Seat int    `json:"seat"`
+			DER  string `json:"der"`
+		}
+		params := map[string]any{
+			"handId":        sessionID,
+			"rawTxHex":      rawHex,
+			"potInput":      inputIndex,
+			"potTxid":       lp.pot.Txid,
+			"potVout":       lp.pot.Vout,
+			"potSatoshis":   lp.pot.Satoshis,
+			"potScriptHex":  potScriptHex,
+			"seat":          s.Seat,
+			"balances":      shares,
+			"maxFee":        refundFee,
+			"maxLockHeight": tx.LockTime,
+		}
+		if err := m.coord.call(ctx, s, substrate.MethodSignRefund, params, &out); err != nil {
+			if strings.Contains(err.Error(), "not served") {
+				return nil, fmt.Errorf(
+					"seat %d is running a wallet too old for this table: it does not serve "+
+						"signRefund. Restart cmd/agent from the current source", s.Seat)
+			}
+			return nil, fmt.Errorf("seat %d would not sign: %w", s.Seat, err)
+		}
+		der, err := hex.DecodeString(out.DER)
+		if err != nil {
+			return nil, fmt.Errorf("seat %d returned a non-hex signature: %w", s.Seat, err)
+		}
+		sig := cosign.Signature{Seat: out.Seat, DER: der}
+		pub, err := ec.PublicKeyFromString(s.IdentityKey)
+		if err != nil {
+			return nil, fmt.Errorf("seat %d has an unusable identity key: %w", s.Seat, err)
+		}
+		if err := cosign.VerifySignature(tx, inputIndex, sig, pub); err != nil {
+			return nil, fmt.Errorf("seat %d's signature is invalid: %w", s.Seat, err)
+		}
+		sigs = append(sigs, sig)
+	}
+	return sigs, nil
 }
