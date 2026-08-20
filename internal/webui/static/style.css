@@ -211,3 +211,29 @@ summary { cursor: pointer; color: var(--muted); font-size: 0.87rem; }
   background: rgba(251,191,36,0.14); color: var(--warn);
   border-color: rgba(251,191,36,0.35);
 }
+
+/* Setup steps. The commands are the main content of the first panel, so they get room to
+   breathe and a horizontal scroll rather than wrapping mid-flag. */
+.steps { margin: 0.6rem 0 0; padding-left: 1.4rem; }
+.steps > li { margin-bottom: 1rem; }
+.steps > li > p { margin: 0 0 0.4rem; font-size: 0.9rem; }
+
+pre {
+  margin: 0.3rem 0 0.5rem;
+  padding: 0.7rem 0.85rem;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow-x: auto;
+  font-size: 0.82rem;
+  line-height: 1.5;
+}
+pre code { color: #cbd5e1; white-space: pre; }
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  background: rgba(255,255,255,0.06);
+  padding: 0.1rem 0.3rem; border-radius: 4px; font-size: 0.85em;
+}
+pre code { background: none; padding: 0; }
+
+label[for] { font-size: 0.85rem; color: var(--muted); margin-right: 0.2rem; }

@@ -35,29 +35,10 @@ async function postJSON(url, payload) {
 
 // --- the wallet -----------------------------------------------------------
 //
-// WalletClient('auto') races every substrate the SDK knows — the injected window.CWI provider, the
-// local HTTP ports BSV Desktop serves, react-native — and uses whichever answers. There is nothing
-// for a player to configure.
-async function connectWallet() {
-  if (!window.bsv || !window.bsv.WalletClient) {
-    throw new Error('the BSV SDK did not load');
-  }
-  const w = new window.bsv.WalletClient('auto', window.location.hostname);
-
-  // getPublicKey with identityKey is both the identity request and the liveness check: if the
-  // wallet answers, it is present, unlocked, and willing to talk to this origin.
-  const { publicKey } = await w.getPublicKey({ identityKey: true });
-  if (!publicKey) throw new Error('the wallet returned no identity key');
-
-  // The network matters: a mainnet wallet at a teratestnet table would produce coins the table
-  // cannot see, which is worth catching before a player commits anything.
-  let network = '';
-  try {
-    ({ network } = await w.getNetwork({}));
-  } catch { /* older wallets may not implement it; not fatal */ }
-
-  return { wallet: w, identityKey: publicKey, network };
-}
+// The player runs a BRC-100 wallet on their own machine and the page talks to it directly. This is
+// not a fallback for a missing browser wallet: the wallet process holds the per-hand masking
+// secrets that keep hole cards private, and no published BRC-100 wallet exposes the operation
+// needed to strip a mask. See docs/wallet-native-deal.md.
 
 function card(spec) {
   const d = document.createElement('div');
@@ -88,55 +69,100 @@ async function loadInfo() {
     const info = await getJSON('/api/info');
     el('network').textContent = info.network || '?';
     el('version').textContent = info.version || '';
-  
+    // Fill the commands with this page's own origin, so they can be pasted without editing.
+    for (const id of ['originHost', 'originEcho', 'originEcho2']) {
+      const n = el(id);
+      if (n) n.textContent = window.location.origin;
+    }
   } catch (e) {
     setStatus('connectStatus', `Could not reach the table service: ${e.message}`, 'bad');
   }
 }
 
-el('connect').addEventListener('click', async () => {
-  setStatus('connectStatus', 'Looking for a BRC-100 wallet…');
+// agentBase is the wallet the player is running, as typed into the page.
+let agentBase = '';
+
+function agentURL() {
+  return el('agentUrl').value.trim().replace(/\/+$/, '');
+}
+
+async function showBalance() {
   try {
-    const conn = await connectWallet();
-    wallet = conn.wallet;
-    identityKey = conn.identityKey;
-
-    let msg = `Connected. Your identity is ${identityKey.slice(0, 20)}…`;
-    if (conn.network) {
-      msg += ` (wallet network: ${conn.network})`;
+    const r = await fetch(`${agentBase}/identity`);
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const info = await r.json();
+    if (typeof info.balanceSatoshis === 'number') {
+      el('balance').textContent = `balance ${info.balanceSatoshis.toLocaleString()} sat`;
+      return info.balanceSatoshis;
     }
-    setStatus('connectStatus', msg, 'ok');
+    el('balance').textContent = 'balance unknown';
+  } catch (e) {
+    el('balance').textContent = 'balance unavailable';
+  }
+  return null;
+}
 
-    // A mainnet wallet at a teratestnet table is a mismatch worth naming before a player
-    // commits, not after.
-    const table = await getJSON('/api/info').catch(() => ({}));
-    if (conn.network === 'mainnet' && table.network && table.network !== 'main') {
-      setStatus('connectStatus',
-        `${msg} — but your wallet is on mainnet and this table is on ${table.network}. ` +
-        `Switch your wallet to teratestnet before playing.`, 'bad');
-    }
+el('connect').addEventListener('click', async () => {
+  agentBase = agentURL();
+  if (!agentBase) {
+    setStatus('connectStatus', 'Enter the address your wallet is listening on.', 'bad');
+    return;
+  }
+  setStatus('connectStatus', `Asking ${agentBase} who it speaks for…`);
+  try {
+    const r = await fetch(`${agentBase}/identity`);
+    if (!r.ok) throw new Error(`the wallet answered HTTP ${r.status}`);
+    const info = await r.json();
+    if (!info.identityKey) throw new Error('the wallet did not return an identity key');
+    identityKey = info.identityKey;
 
+    setStatus('connectStatus',
+      `Connected to your wallet. Your identity is ${identityKey.slice(0, 20)}…`, 'ok');
+
+    el('fundPanel').hidden = false;
     el('seatPanel').hidden = false;
+    await showBalance();
     await refresh();
   } catch (e) {
     setStatus('connectStatus',
-      `No BRC-100 wallet answered: ${e.message}. Install BSV Desktop and switch it to ` +
-      `teratestnet, then try again.`, 'bad');
+      `Your wallet did not answer: ${e.message}. Check the agent is still running, that you ` +
+      `started it with -origin ${window.location.origin}, and that the address is reachable ` +
+      `from this browser.`, 'bad');
+  }
+});
+
+el('refreshBalance').addEventListener('click', showBalance);
+
+el('faucet').addEventListener('click', async () => {
+  setStatus('fundStatus', 'Claiming from the teratestnet faucet…');
+  try {
+    const r = await fetch(`${agentBase}/faucet`, { method: 'POST' });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(body.error || `HTTP ${r.status}`);
+    setStatus('fundStatus',
+      `Claimed ${Number(body.satoshis || 0).toLocaleString()} sat. ` +
+      `The wallet recorded the derivation material, so it is spendable.`, 'ok');
+    await showBalance();
+  } catch (e) {
+    setStatus('fundStatus', `The faucet claim failed: ${e.message}`, 'bad');
   }
 });
 
 el('join').addEventListener('click', async () => {
   try {
-    // A seat that runs its own BRC-100 wallet process registers it here. That is what makes the
-    // deal dealerless: the table can sequence a deal through the wallet without ever being able
-    // to read a card. Blank means the server shuffles, which the table reports rather than hides.
-    const agentUrl = el('agentUrl').value.trim();
-    const { seat, agentRegistered } = await postJSON('/api/join', { identityKey, agentUrl });
+    // The wallet is always registered: a dealerless deal is the only kind this page offers, and
+    // the table cannot sequence one without knowing where the seat's wallet is.
+    const { seat, agentRegistered } = await postJSON('/api/join', {
+      identityKey, agentUrl: agentBase,
+    });
     mySeat = seat;
-    const how = agentRegistered
-      ? 'Your wallet is registered, so your cards will be dealt dealerlessly.'
-      : 'No wallet address given, so the server will shuffle and can see the cards.';
-    setStatus('seatStatus', `You are seat ${seat}. ${how} Commit your buy-in when ready.`, 'ok');
+    if (!agentRegistered) {
+      setStatus('seatStatus',
+        `Seated at ${seat}, but the table could not register your wallet, so this hand would ` +
+        `not be dealerless. Check the wallet address and rejoin.`, 'bad');
+      return;
+    }
+    setStatus('seatStatus', `You are seat ${seat}. Commit your buy-in when ready.`, 'ok');
     await refresh();
   } catch (e) {
     setStatus('seatStatus', e.message, 'bad');

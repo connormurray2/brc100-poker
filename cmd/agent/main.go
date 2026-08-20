@@ -150,7 +150,9 @@ func run() error {
 	// /identity lets a browser client discover which player this agent speaks for, and doubles
 	// as the connection test. It returns only public values: the identity key and the audience
 	// a caller must address requests to.
-	mux.HandleFunc("/identity", identityHandler(a, allowed))
+	mux.HandleFunc("/identity", identityHandler(a, w, allowed))
+	// Funding from the page, so a player never has to stop the agent to claim coins.
+	mux.HandleFunc("/faucet", faucetHandler(w, *originator, allowed, logger))
 
 	srv := &http.Server{
 		Addr:              *listen,
@@ -180,38 +182,105 @@ func run() error {
 	return nil
 }
 
-// identityHandler serves the agent's public identity to a browser client.
+// guardOrigin applies the browser origin allowlist and handles the preflight.
 //
-// Deliberately unauthenticated: everything it returns is public, and a client needs it before it
-// can authenticate anything. It is still origin-checked, so an unlisted page cannot discover which
-// wallet is running here.
-func identityHandler(a *agent.Agent, allowed []string) http.HandlerFunc {
+// Returns false when the request has already been answered and the caller must stop. Shared by
+// every browser-facing endpoint so one of them cannot accidentally be left open.
+func guardOrigin(allowed []string, methods string) func(http.ResponseWriter, *http.Request) bool {
 	permitted := make(map[string]struct{}, len(allowed))
 	for _, o := range allowed {
 		permitted[strings.ToLower(o)] = struct{}{}
 	}
 
-	return func(w http.ResponseWriter, r *http.Request) {
+	return func(w http.ResponseWriter, r *http.Request) bool {
 		origin := r.Header.Get("Origin")
 		if origin != "" {
 			if _, ok := permitted[strings.ToLower(origin)]; !ok {
 				http.Error(w, "origin not allowed", http.StatusForbidden)
-				return
+				return false
 			}
 			w.Header().Set("Access-Control-Allow-Origin", origin)
 			w.Header().Set("Vary", "Origin")
 		}
 		if r.Method == http.MethodOptions {
 			w.Header().Set("Access-Control-Allow-Headers", "content-type")
-			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.Header().Set("Access-Control-Allow-Methods", methods)
 			w.WriteHeader(http.StatusNoContent)
+			return false
+		}
+		return true
+	}
+}
+
+// identityHandler serves the agent's public identity and balance to a browser client.
+//
+// Deliberately unauthenticated: everything it returns is public, and a client needs it before it
+// can authenticate anything. It is still origin-checked, so an unlisted page cannot discover which
+// wallet is running here.
+//
+// The balance is included because the page's first job is telling a player whether they can afford
+// to sit down, and asking them to read it off a terminal is a worse answer than showing it.
+func identityHandler(a *agent.Agent, w2 *brc100.Wallet, allowed []string) http.HandlerFunc {
+	guard := guardOrigin(allowed, "GET, OPTIONS")
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !guard(w, r) {
 			return
 		}
-		w.Header().Set("content-type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
+		out := map[string]any{
 			"identityKey": a.Identity(),
 			"audience":    a.Server().Audience(),
-		})
+		}
+		// A balance read failure must not make the endpoint useless: the identity is what a
+		// client needs to proceed, so report the balance as unknown and carry on.
+		if bal, err := w2.Wallet.Balance(r.Context()); err == nil {
+			out["balanceSatoshis"] = bal
+		} else {
+			out["balanceError"] = err.Error()
+		}
+		w.Header().Set("content-type", "application/json")
+		_ = json.NewEncoder(w).Encode(out)
+	}
+}
+
+// faucetHandler claims teratestnet coins into this wallet.
+//
+// It exists so a player can fund without stopping the agent. The wallet database is held open by
+// this process, so running cmd/fund alongside it would contend for the same SQLite file; doing the
+// claim in-process avoids that entirely.
+//
+// POST-only, because it changes state and a GET would be triggerable by any page that can make the
+// browser issue one.
+func faucetHandler(w2 *brc100.Wallet, originator string, allowed []string, logger *slog.Logger) http.HandlerFunc {
+	guard := guardOrigin(allowed, "POST, OPTIONS")
+
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !guard(w, r) {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "use POST", http.StatusMethodNotAllowed)
+			return
+		}
+
+		ctx, cancel := context.WithTimeout(r.Context(), 90*time.Second)
+		defer cancel()
+
+		w.Header().Set("content-type", "application/json")
+		claim, err := w2.ClaimFromFaucet(ctx, originator, "", "")
+		if err != nil {
+			logger.Warn("faucet claim failed", "error", err)
+			w.WriteHeader(http.StatusBadGateway)
+			_ = json.NewEncoder(w).Encode(map[string]string{"error": err.Error()})
+			return
+		}
+		bal, balErr := w2.Wallet.Balance(ctx)
+		out := map[string]any{"satoshis": claim.Amount, "txid": claim.TxID}
+		if balErr == nil {
+			out["balanceSatoshis"] = bal
+		}
+		logger.Info("claimed from the faucet", "satoshis", claim.Amount, "txid", claim.TxID)
+		_ = json.NewEncoder(w).Encode(out)
 	}
 }
 

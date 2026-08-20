@@ -36,11 +36,16 @@ in hand.
 
 ## 2. Fund it
 
+You can do this from the page once your wallet is running (step 4) — click **Claim from the
+faucet**. That route claims in-process, so nothing has to be stopped.
+
+To fund from a terminal instead, with the wallet **not** running:
+
 ```sh
 go run ./cmd/fund -key secrets/player.key -db secrets/player.db
 ```
 
-Claims 100,000 satoshis from the teratestnet faucet. The faucet pays BRC-29, so this does two
+Either way this claims 100,000 satoshis from the teratestnet faucet. The faucet pays BRC-29, so this does two
 things: it asks for a payment derived from your identity key, then internalizes the result as a
 *wallet payment* with its derivation material. Without the second half the coin exists on-chain and
 your wallet cannot spend it. See [funding.md](funding.md).
@@ -116,15 +121,16 @@ a closed terminal declines too.
 Open **https://poker.siftbitcoin.com**.
 
 1. **Connect wallet.** The page reads your identity key. Your private key never leaves your machine.
-2. **Enter your wallet's address** — `http://127.0.0.1:8091` — in the seat panel, then **Join the
-   table**. The page confirms whether your wallet was registered, so you know which kind of deal you
-   are getting.
-3. **Commit your buy-in.**
+1. **Connect.** The page shows the exact commands to run, prefilled with this table's address, and
+   the wallet address defaults to `http://127.0.0.1:8091`.
+2. **Fund**, if you have not already — the page claims from the faucet through your running wallet
+   and shows the balance.
+3. **Join the table** and commit your buy-in.
 4. **Act on your turn.** The page offers exactly the actions the engine says are legal.
 5. **Approve signing** in the terminal running your wallet when the pot settles.
 
-Leave the address blank and you still play — the table shuffles, and it labels the hand
-**server-dealt** on screen rather than letting you assume otherwise.
+The page registers your wallet on every join, so a hand is always dealerless. If registration
+fails it says so and does not seat you into a hand you would have assumed was private.
 
 Make sure your wallet and the table are on the **same network**. The page checks and warns.
 
@@ -169,8 +175,8 @@ server shuffles. The table says so, every time, on the table itself.
 **"No BRC-100 wallet answered."** Nothing is serving a wallet the page can reach. If you are running
 `cmd/agent`, check it is still up and that you passed `-origin` with the exact page origin.
 
-**Joined, but the table says server-dealt.** The agent URL was blank or unreachable. It must be
-reachable *from your browser*, so `http://127.0.0.1:8091` — not a Docker-internal address.
+**"The table could not register your wallet."** The address is wrong or unreachable. It must be
+reachable *from your browser*, so `http://127.0.0.1:8091` — not a container-internal address.
 
 **"no table authorised".** You started the wallet without `-table`. Restart it with the identity key
 from `/api/info`.

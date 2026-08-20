@@ -16,45 +16,87 @@
 </header>
 
 <main>
-  <!-- Step 1: connect your BRC-100 wallet. The key never leaves it. -->
+  <!-- Step 1: point the page at the BRC-100 wallet running on this machine. -->
   <section class="panel" id="connectPanel">
-    <h2>1 · Connect your BRC-100 wallet</h2>
+    <h2>1 · Start your wallet</h2>
     <p class="hint">
-      Your key stays in your wallet — BSV Desktop, or any BRC-100 wallet the SDK can reach. This
-      page never sees it, and cannot sign for you: it asks your wallet, and your wallet asks you.
+      You play through a BRC-100 wallet running on <b>your own machine</b>. It holds your key, and
+      this page never sees it. The wallet also holds the secrets that keep your hole cards private,
+      which is why the game needs it rather than a browser extension.
     </p>
-    <div class="controls">
-      <button id="connect" class="primary">Connect wallet</button>
-    </div>
+
+    <ol class="steps">
+      <li>
+        <p>Get the table's identity key, so your wallet only answers to this table:</p>
+        <pre><code>curl -s <span id="originHost">…</span>/api/info | jq -r .identityKey</code></pre>
+      </li>
+      <li>
+        <p>Start your wallet, pasting that key after <code>-table</code>:</p>
+        <pre><code>go run ./cmd/agent \
+  -key    secrets/player.key \
+  -db     secrets/player.db \
+  -table  &lt;identity key from step 1&gt; \
+  -origin <span id="originEcho">…</span> \
+  -listen 127.0.0.1:8091</code></pre>
+        <p class="hint">
+          No key yet? <code>go run ./cmd/keygen -out secrets/player.key</code> first. Back up both
+          the key and the database — the database <i>is</i> the wallet.
+        </p>
+      </li>
+      <li>
+        <p>Leave it running, then connect:</p>
+        <div class="controls">
+          <label for="agentUrl">Wallet address</label>
+          <input id="agentUrl" type="text" value="http://127.0.0.1:8091" size="24">
+          <button id="connect" class="primary">Connect</button>
+        </div>
+      </li>
+    </ol>
+
     <div id="connectStatus" class="status"></div>
-<details>
-  <summary>No wallet detected?</summary>
-    <p class="hint">
-      Install <a href="https://bsvblockchain.org" target="_blank" rel="noreferrer">BSV Desktop</a>
-      and switch it to <b>teratestnet</b>. The page finds it automatically over the BRC-100
-      substrate — nothing to configure and no ports to open.
-    </p>
-</details>
+
+    <details>
+      <summary>It says the wallet did not answer</summary>
+      <p class="hint">
+        Three things to check. The agent must still be running in your terminal. It must have been
+        started with <code>-origin</code> set to exactly <b id="originEcho2">…</b>, or the browser
+        is refused before it can even ask. And the address above must be reachable from
+        <i>this browser</i> — so <code>127.0.0.1</code>, not a container-internal address.
+      </p>
+    </details>
   </section>
 
-  <!-- Step 2: take a seat and commit. -->
-  <section class="panel" id="seatPanel" hidden>
-    <h2>2 · Take a seat</h2>
+  <!-- Step 2: funding, done through the running wallet so nothing has to be stopped. -->
+  <section class="panel" id="fundPanel" hidden>
+    <h2>2 · Fund it</h2>
+    <p class="hint">
+      Teratestnet coins, claimed straight into the wallet you just started. The faucet pays
+      BRC-29, so the wallet also records the derivation material — without that the coin exists
+      on-chain and stays unspendable.
+    </p>
     <div class="controls">
-      <label for="agentUrl">Your wallet's address (optional)</label>
-      <input id="agentUrl" type="text" placeholder="http://127.0.0.1:8091" size="24">
+      <span id="balance" class="tag">balance …</span>
+      <button id="faucet" class="primary">Claim from the faucet</button>
+      <button id="refreshBalance">Refresh</button>
+    </div>
+    <div id="fundStatus" class="status"></div>
+  </section>
+
+  <!-- Step 3: take a seat and commit. -->
+  <section class="panel" id="seatPanel" hidden>
+    <h2>3 · Take a seat</h2>
+    <div class="controls">
       <button id="join" class="primary">Join the table</button>
       <button id="ready">I'm ready (commit buy-in)</button>
     </div>
     <p class="hint">
-      Running your own BRC-100 wallet process? Give its address and your cards are dealt
-      dealerlessly &mdash; nothing, including this server, can read them. Leave it blank and the
-      server shuffles instead, which it will say plainly on the table.
+      Your cards are dealt <b>dealerlessly</b>: every seat holds a secret for your card positions
+      and discloses it only to you. Nothing else — including this server — can read your hand.
     </p>
     <div id="seatStatus" class="status"></div>
   </section>
 
-  <!-- Step 3: the table. -->
+  <!-- Step 4: the table. -->
   <section class="panel" id="tablePanel" hidden>
     <div class="tableHead">
       <h2 id="tableId">—</h2>
@@ -92,7 +134,6 @@
 </main>
 
 <footer><span id="updated" class="muted"></span></footer>
-<script src="/bsv-sdk.js"></script>
 <script src="/app.js"></script>
 </body>
 </html>

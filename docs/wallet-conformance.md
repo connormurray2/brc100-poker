@@ -51,9 +51,15 @@ otherwise.
 
 - **HTTP POST** to a single endpoint. The reference serves `POST /` on `127.0.0.1:8091`.
 - **`Content-Type: application/json`**, one request per body, one response per body.
-- The wallet publishes an unauthenticated **`GET /identity`** returning `{ identityKey, audience }`
-  so a client can discover which player it speaks for before authenticating anything. Everything it
-  returns is public. It MUST still be origin-checked so an unlisted page cannot enumerate wallets.
+- The wallet publishes an unauthenticated **`GET /identity`** returning
+  `{ identityKey, audience, balanceSatoshis }` so a client can discover which player it speaks for
+  and whether they can afford to sit down. Everything it returns is public. It MUST still be
+  origin-checked so an unlisted page cannot enumerate wallets. A wallet that cannot read its
+  balance SHOULD still serve the identity, reporting `balanceError` instead — the identity is what
+  a client needs to proceed.
+- A testnet wallet MAY serve **`POST /faucet`** to claim coins in-process. This exists because the
+  wallet holds its database open, so a separate funding command would contend for the same SQLite
+  file. It MUST be POST: a GET would be triggerable by any page that can make a browser issue one.
 - Requests over plaintext SHOULD be refusable via configuration (`-require-tls` in the reference).
   A wallet reachable off-host MUST require TLS.
 
