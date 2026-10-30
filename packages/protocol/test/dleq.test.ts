@@ -59,6 +59,14 @@ describe('dleq', () => {
     expect(verify(st, { ...pr, z: new BigNumber(-1) })).toBe(false);
   });
 
+  it('rejects z = 0 explicitly, matching the referee range [1, n)', () => {
+    const st = statement();
+    const pr = prove(st, s, secret);
+    expect(pr.z.isZero()).toBe(false);
+    expect(verify(st, { ...pr, z: new BigNumber(0) })).toBe(false);
+    expect(verify(st, { ...pr, z: n })).toBe(false);
+  });
+
   it('returns false, not a throw, for points at infinity', () => {
     const st = statement();
     const pr = prove(st, s, secret);

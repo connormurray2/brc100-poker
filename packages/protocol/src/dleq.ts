@@ -83,7 +83,11 @@ export function prove(st: DleqStatement, s: BigNumber, nonceSecret: Uint8Array):
   const A1 = st.B1.mul(w);
   const A2 = st.B2.mul(w);
   const c = challenge(statementBytes(st, A1, A2));
-  return { A1, A2, z: w.add(c.mul(s)).umod(N) };
+  const z = w.add(c.mul(s)).umod(N);
+  // The referee requires z in [1, n), so a zero z is unusable. It happens with probability 1/n; a caller that
+  // gets this error can only re-run with a different statement, since the nonce is a function of it.
+  if (z.isZero()) throw new Error('derived a zero response');
+  return { A1, A2, z };
 }
 
 const finite = (p: Point): boolean => p instanceof Point && !p.isInfinity() && p.validate();
@@ -91,11 +95,11 @@ const finite = (p: Point): boolean => p instanceof Point && !p.isInfinity() && p
 /** `k·p`, with the zero scalar giving the point at infinity instead of relying on the library. */
 const mulOrInfinity = (p: Point, k: BigNumber): Point => (k.isZero() ? new Point(null, null) : p.mul(k));
 
-/** Check z·B1 = A1 + c·P1 and z·B2 = A2 + c·P2. Never throws for a malformed proof. */
+/** Check z·B1 = A1 + c·P1 and z·B2 = A2 + c·P2, with z in [1, n) as the referee requires. Never throws for a malformed proof. */
 export function verify(st: DleqStatement, pr: DleqProof): boolean {
   try {
     if (![st.B1, st.P1, st.B2, st.P2, pr.A1, pr.A2].every(finite)) return false;
-    if (!(pr.z instanceof BigNumber) || pr.z.isNeg() || pr.z.cmp(N) >= 0) return false;
+    if (!(pr.z instanceof BigNumber) || pr.z.isNeg() || pr.z.isZero() || pr.z.cmp(N) >= 0) return false;
     const c = challenge(statementBytes(st, pr.A1, pr.A2));
     const rhs1 = pr.A1.add(mulOrInfinity(st.P1, c));
     const rhs2 = pr.A2.add(mulOrInfinity(st.P2, c));
