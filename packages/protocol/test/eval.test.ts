@@ -21,6 +21,7 @@ describe('bestScore', () => {
     // Consecutive pairs: the ordering of two hands must match the Go ordering (including ties).
     for (let i = 1; i < vectors.length; i++) {
       const a = vectors[i - 1], b = vectors[i];
+      if (a === undefined || b === undefined) throw new Error(`no vector at ${i}`);
       expect(
         sign(bestScore(a.cards) - bestScore(b.cards)),
         `pair ${i - 1}/${i}: ${a.cards} vs ${b.cards}`,
@@ -37,8 +38,12 @@ describe('bestScore', () => {
       for (let i = 0; i < bucket.length; i++) {
         for (let j = i + 1; j < bucket.length; j++) {
           pairs++;
-          if (sign(mine[i] - mine[j]) !== sign(bucket[i].score - bucket[j].score)) {
-            throw new Error(`disagree on ${bucket[i].cards} vs ${bucket[j].cards}`);
+          const mi = mine[i], mj = mine[j], bi = bucket[i], bj = bucket[j];
+          if (mi === undefined || mj === undefined || bi === undefined || bj === undefined) {
+            throw new Error(`no vector at ${i}/${j}`);
+          }
+          if (sign(mi - mj) !== sign(bi.score - bj.score)) {
+            throw new Error(`disagree on ${bi.cards} vs ${bj.cards}`);
           }
         }
       }

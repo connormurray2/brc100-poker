@@ -10,5 +10,5 @@
     "skipLibCheck": true,
     "noEmit": true
   },
-  "include": ["buyin", "test/buyin-checks.test.ts"]
+  "include": ["buyin", "src", "test"]
 }

@@ -7,7 +7,8 @@
   },
   "description": "Pure TypeScript poker protocol primitives",
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "typecheck": "tsc -p . --noEmit"
   },
   "dependencies": {
     "@bsv/sdk": "^2.0.7"
