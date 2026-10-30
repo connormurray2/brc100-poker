@@ -19,8 +19,8 @@ import {
 import type { ByteString, Point, Ripemd160 } from 'runar-lang';
 
 /**
- * Gate (d): convicts a recorded Chaum–Pedersen proof that is false, with the expensive EC
- * multiplications in separate checker outputs. The real dispute referee reuses this pattern.
+ * Gate (d): convicts a recorded Chaum–Pedersen proof that is false, with the EC multiplications in
+ * separate checker outputs. The real dispute referee reuses this pattern.
  *
  * Recorded (readonly, baked at deploy): the statement B1 = G (implied), P1, B2, P2, the proof
  * A1, A2, z, and the domain. The proof claims
@@ -30,17 +30,17 @@ import type { ByteString, Point, Ripemd160 } from 'runar-lang';
  * 64-byte affine), exactly as `challenge(statementBytes(...))` in @brc100-poker/protocol.
  *
  * `prepare(eq, L, M, …)` (phase 0 → 1): stores the claimed products L = z·B and M = c·P and
- * creates two stateless checkers whose locking scripts bake those claims in:
- *   eq 1: EcMulGenCheck(k = z, out = L)          and EcMulCheck(base = P1, k = c, out = M)
- *   eq 2: EcMulCheck(base = B2, k = z, out = L)  and EcMulCheck(base = P2, k = c, out = M)
- * The caller hands in the checker templates (the bytes between constructor slots) and the referee
- * splices the pushes in. Each caller-supplied segment's length and the SHA-256 of their
- * concatenation are bound to constants baked at deploy (the hash alone would let a caller move
- * bytes across a segment boundary). The caller pays a bond into the continuation.
+ * creates two stateless WitnessEcMulCheck outputs whose locking scripts bake those claims in:
+ *   eq 1: (base = G,  k = z, out = L)  and  (base = P1, k = c, out = M)
+ *   eq 2: (base = B2, k = z, out = L)  and  (base = P2, k = c, out = M)
+ * A WitnessEcMulCheck script is push(base) ‖ push(k) ‖ push(out) ‖ body, one fixed body for every
+ * statement. The caller hands the body in, and its length and SHA-256 are bound to constants baked at
+ * deploy. The caller pays a bond into the continuation.
  *
  * `fraud(feeOutpoint)` (phase 1 → 2): requires the transaction's inputs to be exactly
  * (this referee, (prepTxid, 1), (prepTxid, 2), feeOutpoint), where prepTxid is the txid in the
- * referee's own outpoint. Spending the two checkers is what proves L = z·B and M = c·P. It then
+ * referee's own outpoint. Spending the two checkers (each with its slope witness) is what proves
+ * L = z·B and M = c·P. It then
  * asserts L !== A + M, and returns the bond to the prepare caller.
  *
  * Every method is ALL|FORKID: the continuation pins the referee's full value, and the caller's
@@ -56,22 +56,11 @@ export class GateReferee extends StatefulSmartContract {
   readonly z: bigint;
   readonly bondSats: bigint;
 
-  // EcMulCheck(base, k, out) = push(base) ‖ mulA ‖ push(k) ‖ mulMid ‖ push(base) ‖ push(k) ‖ mulB
-  //                            ‖ push(out) ‖ mulTail. mulA and mulB come from the caller.
-  readonly mulLenA: bigint;
-  readonly mulLenB: bigint;
-  readonly mulHash: ByteString;
-  readonly mulMid: ByteString;
-  readonly mulTail: ByteString;
-  // EcMulGenCheck(k, out) = genHead ‖ push(k) ‖ genMid ‖ push(k) ‖ genBody ‖ push(out) ‖ genTail.
-  // genBody comes from the caller.
-  readonly genHead: ByteString;
-  readonly genMid: ByteString;
-  readonly genLen: bigint;
-  readonly genHash: ByteString;
-  readonly genTail: ByteString;
+  // The WitnessEcMulCheck body (everything after its three constructor pushes), from the caller.
+  readonly chkLen: bigint;
+  readonly chkHash: ByteString;
 
-  /** affine(G), the implied B1. */
+  /** affine(G), the implied B1, and eq 1's L base. */
   readonly gAffine: ByteString = toByteString(
     '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8',
   );
@@ -95,22 +84,13 @@ export class GateReferee extends StatefulSmartContract {
     A2: Point,
     z: bigint,
     bondSats: bigint,
-    mulLenA: bigint,
-    mulLenB: bigint,
-    mulHash: ByteString,
-    mulMid: ByteString,
-    mulTail: ByteString,
-    genHead: ByteString,
-    genMid: ByteString,
-    genLen: bigint,
-    genHash: ByteString,
-    genTail: ByteString,
+    chkLen: bigint,
+    chkHash: ByteString,
     L: Point,
     M: Point,
     bondPKH: Ripemd160,
   ) {
-    super(domain, B2, P1, P2, A1, A2, z, bondSats, mulLenA, mulLenB, mulHash, mulMid, mulTail, genHead, genMid,
-      genLen, genHash, genTail, L, M, bondPKH);
+    super(domain, B2, P1, P2, A1, A2, z, bondSats, chkLen, chkHash, L, M, bondPKH);
     this.domain = domain;
     this.B2 = B2;
     this.P1 = P1;
@@ -119,16 +99,8 @@ export class GateReferee extends StatefulSmartContract {
     this.A2 = A2;
     this.z = z;
     this.bondSats = bondSats;
-    this.mulLenA = mulLenA;
-    this.mulLenB = mulLenB;
-    this.mulHash = mulHash;
-    this.mulMid = mulMid;
-    this.mulTail = mulTail;
-    this.genHead = genHead;
-    this.genMid = genMid;
-    this.genLen = genLen;
-    this.genHash = genHash;
-    this.genTail = genTail;
+    this.chkLen = chkLen;
+    this.chkHash = chkHash;
     this.L = L;
     this.M = M;
     this.bondPKH = bondPKH;
@@ -137,8 +109,8 @@ export class GateReferee extends StatefulSmartContract {
   /**
    * Create the two checkers for equation `eqSel`, claiming L = z·B and M = c·P.
    *
-   * `genBody` is used only for eq 1 (pass empty for eq 2). The products' values are not checked
-   * here: a false claim just makes its checker unspendable, so fraud cannot follow.
+   * The products' values are not checked here: a false claim just makes its checker unspendable,
+   * so fraud cannot follow.
    *
    * Their WIDTHS are checked, and must be: Rúnar does not enforce a Point's 64 bytes at runtime.
    * An 81-byte lPt would put 17 caller bytes of script after the checker's `0x40` push (so the
@@ -151,9 +123,7 @@ export class GateReferee extends StatefulSmartContract {
     eqSel: bigint,
     lPt: Point,
     mPt: Point,
-    mulA: ByteString,
-    mulB: ByteString,
-    genBody: ByteString,
+    body: ByteString,
     refundPKH: Ripemd160,
   ) {
     assert(this.phase === 0n);
@@ -166,28 +136,21 @@ export class GateReferee extends StatefulSmartContract {
     assert(len(this.P2) === 64n);
     assert(len(this.A1) === 64n);
     assert(len(this.A2) === 64n);
-    assert(len(mulA) === this.mulLenA);
-    assert(len(mulB) === this.mulLenB);
-    assert(sha256(cat(mulA, mulB)) === this.mulHash);
+    assert(len(body) === this.chkLen);
+    assert(sha256(body) === this.chkHash);
 
     const c: bigint = this.challengeScalar();
     const pushZ: ByteString = this.pushNum(this.z);
     const pushC: ByteString = this.pushNum(c);
 
+    let lBase: ByteString = this.gAffine;
     let mBase: Point = this.P1;
     if (eqSel === 2n) {
+      lBase = this.B2;
       mBase = this.P2;
     }
-    const mScript: ByteString = this.mulScript(mBase, pushC, mPt, mulA, mulB);
-
-    let lScript: ByteString = toByteString('');
-    if (eqSel === 1n) {
-      assert(len(genBody) === this.genLen);
-      assert(sha256(genBody) === this.genHash);
-      lScript = this.genScript(pushZ, lPt, genBody);
-    } else {
-      lScript = this.mulScript(this.B2, pushZ, lPt, mulA, mulB);
-    }
+    const lScript: ByteString = this.chkScript(lBase, pushZ, lPt, body);
+    const mScript: ByteString = this.chkScript(mBase, pushC, mPt, body);
 
     // Output 0: the continuation, carrying the referee's full value plus the bond.
     this.addOutput(extractAmount(this.txPreimage) + this.bondSats, 1n, eqSel, lPt, mPt, refundPKH);
@@ -235,17 +198,9 @@ export class GateReferee extends StatefulSmartContract {
     return h % order;
   }
 
-  /** EcMulCheck(base, k, out)'s locking script, with `pushK` the push of k. */
-  private mulScript(base: Point, pushK: ByteString, out: Point, mulA: ByteString, mulB: ByteString): ByteString {
-    const pushBase: ByteString = cat(toByteString('40'), base);
-    const head: ByteString = cat(cat(cat(pushBase, mulA), cat(pushK, this.mulMid)), cat(pushBase, pushK));
-    return cat(cat(head, mulB), cat(cat(toByteString('40'), out), this.mulTail));
-  }
-
-  /** EcMulGenCheck(k, out)'s locking script, with `pushK` the push of k. */
-  private genScript(pushK: ByteString, out: Point, genBody: ByteString): ByteString {
-    const head: ByteString = cat(cat(this.genHead, pushK), cat(this.genMid, pushK));
-    return cat(cat(head, genBody), cat(cat(toByteString('40'), out), this.genTail));
+  /** WitnessEcMulCheck(base, k, out)'s locking script, with `pushK` the push of k. */
+  private chkScript(base: ByteString, pushK: ByteString, out: Point, body: ByteString): ByteString {
+    return cat(cat(cat(toByteString('40'), base), pushK), cat(cat(toByteString('40'), out), body));
   }
 
   /**

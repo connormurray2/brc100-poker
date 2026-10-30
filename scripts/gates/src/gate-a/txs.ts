@@ -17,7 +17,7 @@ import {
 } from 'runar-sdk';
 import type { Provider, TransactionData, UTXO } from 'runar-sdk';
 import type { RunarArtifact } from 'runar-ir-schema';
-import { cardPoint, challenge, prove, statementBytes, toAffine64 } from '@brc100-poker/protocol';
+import { cardPoint, challenge, ecMulWitness, prove, statementBytes, toAffine64 } from '@brc100-poker/protocol';
 import type { DleqStatement } from '@brc100-poker/protocol';
 import { feeFor, type FeeRate } from '../broadcaster.js';
 import { p2pkhScript, pkhOf } from './store.js';
@@ -158,7 +158,7 @@ export const GATE_DOMAIN = 'brc100-poker/gate-a/v1';
 export const REF_SATS = 2_000;
 export const BOND = 1_000;
 export const CHECKER_SATS = 1;
-/** The equation convicted: eq 1 carries both checker templates, the largest prepare (~1.8 MB). */
+/** The equation convicted. Both equations build the same two WitnessEcMulCheck outputs; eq 1's L base is G. */
 export const FRAUD_EQ = 1 as const;
 
 type Recorded = { st: DleqStatement; A1: Point; A2: Point; z: bigint };
@@ -179,28 +179,17 @@ function products(r: Recorded, eq: 1 | 2): { L: Point; M: Point } {
   return eq === 1 ? { L: mul(G, r.z), M: mul(r.st.P1, c) } : { L: mul(r.st.B2, r.z), M: mul(r.st.P2, c) };
 }
 
-export type Tmpl = { mulA: string; mulMid: string; mulB: string; mulTail: string; genHead: string; genMid: string; genBody: string; genTail: string };
-
-function segmentsOf(art: RunarArtifact): { names: string[]; segs: string[] } {
+/**
+ * WitnessEcMulCheck's body: its script after the three constructor-slot placeholders, which must sit at
+ * bytes 0, 1 and 2 (base, k, out), the shape GateReferee splices.
+ */
+export function bodyOf(art: RunarArtifact): string {
   const slots = [...art.constructorSlots!].sort((a, b) => a.byteOffset - b.byteOffset);
-  const segs: string[] = [];
-  let pos = 0;
-  for (const s of slots) {
-    if (art.script.slice(s.byteOffset * 2, s.byteOffset * 2 + 2) !== '00') throw new Error(`${art.contractName}: slot ${s.name} is not an OP_0 placeholder`);
-    segs.push(art.script.slice(pos * 2, s.byteOffset * 2));
-    pos = s.byteOffset + 1;
+  const shape = slots.map((x) => `${String(x.name)}@${x.byteOffset}`).join();
+  if (shape !== 'base@0,k@1,out@2' || art.script.slice(0, 6) !== '000000') {
+    throw new Error(`checker slot shape changed (${shape}): GateReferee's splice no longer applies`);
   }
-  segs.push(art.script.slice(pos * 2));
-  return { names: slots.map((s) => String(s.name)), segs };
-}
-
-/** The checker template segments, with the slot shape GateReferee hard-codes asserted. */
-export function templatesOf(mulArt: RunarArtifact, genArt: RunarArtifact): Tmpl {
-  const m = segmentsOf(mulArt);
-  const g = segmentsOf(genArt);
-  const ok = m.names.join() === 'base,k,base,k,out' && m.segs[0] === '' && m.segs[3] === '' && g.names.join() === 'k,k,out';
-  if (!ok) throw new Error(`checker slot shapes changed (${m.names}; ${g.names}): GateReferee's splice no longer applies`);
-  return { mulA: m.segs[1]!, mulMid: m.segs[2]!, mulB: m.segs[4]!, mulTail: m.segs[5]!, genHead: g.segs[0]!, genMid: g.segs[1]!, genBody: g.segs[2]!, genTail: g.segs[3]! };
+  return art.script.slice(6);
 }
 
 const pushPoint = (p: Point) => '40' + aff(p);
@@ -214,19 +203,20 @@ function pushNum(n: bigint): string {
   return bytes.length.toString(16).padStart(2, '0') + Buffer.from(bytes).toString('hex');
 }
 
-const mulScript = (t: Tmpl, base: Point, k: bigint, out: Point) =>
-  pushPoint(base) + t.mulA + pushNum(k) + t.mulMid + pushPoint(base) + pushNum(k) + t.mulB + pushPoint(out) + t.mulTail;
-const genScript = (t: Tmpl, k: bigint, out: Point) =>
-  t.genHead + pushNum(k) + t.genMid + pushNum(k) + t.genBody + pushPoint(out) + t.genTail;
+/** WitnessEcMulCheck(base, k, out): push(base) ‖ push(k) ‖ push(out) ‖ body. */
+const chkScript = (body: string, base: Point, k: bigint, out: Point) => pushPoint(base) + pushNum(k) + pushPoint(out) + body;
 
-export function refereeArgs(r: Recorded, t: Tmpl): unknown[] {
+/** The two checkers for `eq`, as (base, k): L = z·B, then M = c·P. */
+function checkerStatements(r: Recorded, eq: 1 | 2): [[Point, bigint], [Point, bigint]] {
+  return eq === 1 ? [[G, r.z], [r.st.P1, cOf(r)]] : [[r.st.B2, r.z], [r.st.P2, cOf(r)]];
+}
+
+export function refereeArgs(r: Recorded, body: string): unknown[] {
   return [
     Utils.toHex(Utils.toArray(r.st.domain, 'utf8')),
     aff(r.st.B2), aff(r.st.P1), aff(r.st.P2), aff(r.A1), aff(r.A2), r.z,
     BigInt(BOND),
-    BigInt(t.mulA.length / 2), BigInt(t.mulB.length / 2), sha256Hex(t.mulA + t.mulB),
-    t.mulMid, t.mulTail,
-    t.genHead, t.genMid, BigInt(t.genBody.length / 2), sha256Hex(t.genBody), t.genTail,
+    BigInt(body.length / 2), sha256Hex(body),
     '00'.repeat(64), '00'.repeat(64), '00'.repeat(20),
   ];
 }
@@ -245,11 +235,11 @@ function refereeUnlock(c: RunarContract, method: string, args: unknown[], change
 }
 
 /**
- * A referee spend: input 0 the referee, then `extra` (empty unlocks: the checkers' verify() takes no
- * arguments), then the wallet coin; outputs the continuation, then `outputs`, then change.
+ * A referee spend: input 0 the referee, then `extra` (each with its own unlocking script), then the
+ * wallet coin; outputs the continuation, then `outputs`, then change.
  */
 async function callReferee(refArt: RunarArtifact, w: Wallet, src: SourceLookup, rate: FeeRate, o: {
-  ref: UTXO; method: 'prepare' | 'fraud'; args: (feeOutpoint: string) => unknown[]; extra: UTXO[]; coin: UTXO;
+  ref: UTXO; method: 'prepare' | 'fraud'; args: (feeOutpoint: string) => unknown[]; extra: Array<{ utxo: UTXO; unlock: string }>; coin: UTXO;
   outputs: Array<{ script: string; satoshis: number }>; next: { satoshis: number; state: Record<string, unknown> };
 }): Promise<Transaction> {
   const ref = RunarContract.fromUtxo(refArt, o.ref);
@@ -258,16 +248,16 @@ async function callReferee(refArt: RunarArtifact, w: Wallet, src: SourceLookup, 
   const contScript = nextC.getLockingScript();
   const methodIndex = refArt.abi.methods.filter((m) => m.isPublic).findIndex((m) => m.name === o.method);
   const args = o.args(rev(o.coin.txid) + le32(o.coin.outputIndex));
-  const totalIn = o.ref.satoshis + o.extra.reduce((s, u) => s + u.satoshis, 0) + o.coin.satoshis;
+  const totalIn = o.ref.satoshis + o.extra.reduce((s, e) => s + e.utxo.satoshis, 0) + o.coin.satoshis;
   const totalOut = o.next.satoshis + o.outputs.reduce((s, x) => s + x.satoshis, 0);
-  const all = withCoin(src, o.ref, ...o.extra, o.coin);
+  const all = withCoin(src, o.ref, ...o.extra.map((e) => e.utxo), o.coin);
   let fee = 0;
   for (let round = 0; round < 10; round++) {
     const change = totalIn - totalOut - fee;
     if (change < 1) throw new Error(`${o.method}: coin cannot cover outputs and fee ${fee}`);
     const tx = new Transaction();
     tx.addInput({ sourceTXID: o.ref.txid, sourceOutputIndex: o.ref.outputIndex, unlockingScript: UnlockingScript.fromHex(''), sequence: 0xffffffff });
-    for (const e of o.extra) tx.addInput({ sourceTXID: e.txid, sourceOutputIndex: e.outputIndex, unlockingScript: UnlockingScript.fromHex(''), sequence: 0xffffffff });
+    for (const e of o.extra) tx.addInput({ sourceTXID: e.utxo.txid, sourceOutputIndex: e.utxo.outputIndex, unlockingScript: UnlockingScript.fromHex(e.unlock), sequence: 0xffffffff });
     tx.addInput({ sourceTXID: o.coin.txid, sourceOutputIndex: o.coin.outputIndex, unlockingScript: UnlockingScript.fromHex(''), sequence: 0xffffffff });
     tx.addOutput({ satoshis: o.next.satoshis, lockingScript: LockingScript.fromHex(contScript) });
     for (const x of o.outputs) tx.addOutput({ satoshis: x.satoshis, lockingScript: LockingScript.fromHex(x.script) });
@@ -282,19 +272,19 @@ async function callReferee(refArt: RunarArtifact, w: Wallet, src: SourceLookup, 
   throw new Error(`${o.method}: the fee did not converge`);
 }
 
-export interface RefereeKit { refArt: RunarArtifact; tmpl: Tmpl; rec: Recorded }
+export interface RefereeKit { refArt: RunarArtifact; body: string; rec: Recorded }
 
 /** The deployed referee: the invalid proof recorded at phase 0. */
-export const refereeLockingScript = (k: RefereeKit) => new RunarContract(k.refArt, refereeArgs(k.rec, k.tmpl)).getLockingScript();
+export const refereeLockingScript = (k: RefereeKit) => new RunarContract(k.refArt, refereeArgs(k.rec, k.body)).getLockingScript();
 
 export async function buildPrepare(k: RefereeKit, w: Wallet, src: SourceLookup, rate: FeeRate, ref: UTXO, coin: UTXO) {
   const { L, M } = products(k.rec, FRAUD_EQ);
-  const r = k.rec;
-  const lScript = genScript(k.tmpl, r.z, L);
-  const mScript = mulScript(k.tmpl, r.st.P1, cOf(r), M);
+  const [[lBase, lK], [mBase, mK]] = checkerStatements(k.rec, FRAUD_EQ);
+  const lScript = chkScript(k.body, lBase, lK, L);
+  const mScript = chkScript(k.body, mBase, mK, M);
   return callReferee(k.refArt, w, src, rate, {
     ref, coin, method: 'prepare', extra: [],
-    args: () => [BigInt(FRAUD_EQ), aff(L), aff(M), k.tmpl.mulA, k.tmpl.mulB, k.tmpl.genBody, w.pkh],
+    args: () => [BigInt(FRAUD_EQ), aff(L), aff(M), k.body, w.pkh],
     outputs: [{ script: lScript, satoshis: CHECKER_SATS }, { script: mScript, satoshis: CHECKER_SATS }],
     next: { satoshis: ref.satoshis + BOND, state: { phase: 1n, eq: BigInt(FRAUD_EQ), L: aff(L), M: aff(M), bondPKH: w.pkh } },
   });
@@ -303,7 +293,12 @@ export async function buildPrepare(k: RefereeKit, w: Wallet, src: SourceLookup, 
 export async function buildFraud(k: RefereeKit, w: Wallet, src: SourceLookup, rate: FeeRate, ref: UTXO, checkers: [UTXO, UTXO], coin: UTXO) {
   const st = RunarContract.fromUtxo(k.refArt, ref).state;
   return callReferee(k.refArt, w, src, rate, {
-    ref, coin, method: 'fraud', extra: checkers,
+    // Each checker is spent with the slope witness for its (base, k).
+    ref, coin, method: 'fraud',
+    extra: checkers.map((utxo, i) => {
+      const [base, kk] = checkerStatements(k.rec, FRAUD_EQ)[i]!;
+      return { utxo, unlock: encodePushData(ecMulWitness(base, kk)) };
+    }),
     args: (feeOutpoint) => [feeOutpoint],
     outputs: [{ script: w.script, satoshis: BOND }], // the bond returns to bondPKH, the wallet
     next: { satoshis: ref.satoshis - BOND, state: { ...st, phase: 2n } },
@@ -322,10 +317,10 @@ export function continuationOf(art: RunarArtifact, utxo: UTXO, state: Record<str
 /** prepare's outputs: the phase-1 continuation, the two checkers, change to the gate key. */
 export function prepareExpected(k: RefereeKit, w: Wallet, ref: UTXO): string[] {
   const { L, M } = products(k.rec, FRAUD_EQ);
-  const r = k.rec;
+  const [[lBase, lK], [mBase, mK]] = checkerStatements(k.rec, FRAUD_EQ);
   return [
     continuationOf(k.refArt, ref, { phase: 1n, eq: BigInt(FRAUD_EQ), L: aff(L), M: aff(M), bondPKH: w.pkh }),
-    genScript(k.tmpl, r.z, L), mulScript(k.tmpl, r.st.P1, cOf(r), M), w.script,
+    chkScript(k.body, lBase, lK, L), chkScript(k.body, mBase, mK, M), w.script,
   ];
 }
 

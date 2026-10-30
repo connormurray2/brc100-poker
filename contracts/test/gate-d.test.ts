@@ -1,5 +1,5 @@
-// Gate (d): a referee creates the checkers for a recorded Chaum–Pedersen proof in `prepare`, and
-// `fraud` spends them alongside the referee. Every transaction below is assembled by hand (the SDK
+// Gate (d): a referee creates the checkers (WitnessEcMulCheck) for a recorded Chaum–Pedersen proof in
+// `prepare`, and `fraud` spends them, each with its slope witness, alongside the referee. Every transaction below is assembled by hand (the SDK
 // cannot mix a stateful covenant, two stateless checkers and a P2PKH fee coin in one call) and
 // broadcast to MockProvider, which replays EVERY input through @bsv/sdk's real Spend interpreter.
 import { describe, it, expect, beforeAll } from 'vitest';
@@ -12,7 +12,7 @@ import {
 } from 'runar-sdk';
 import type { UTXO } from 'runar-sdk';
 import type { RunarArtifact } from 'runar-ir-schema';
-import { cardPoint, challenge, prove, statementBytes, toAffine64 } from '@brc100-poker/protocol';
+import { cardPoint, challenge, ecMulWitness, fromAffine64, prove, statementBytes, toAffine64 } from '@brc100-poker/protocol';
 import type { DleqStatement } from '@brc100-poker/protocol';
 import { contractsRoot, loadArtifact } from './helpers';
 
@@ -82,27 +82,16 @@ function products(r: Recorded, eq: 1 | 2): { L: Point; M: Point } {
     : { L: mul(r.st.B2, r.z), M: mul(r.st.P2, c) };
 }
 
-// ---- checker templates and the off-chain splice -----------------------------------------------
+// ---- the checker body and the off-chain splice ------------------------------------------------
 
-/** Template bytes between constructor-slot placeholders, derived from the artifact. */
-function segmentsOf(art: RunarArtifact): { names: string[]; segs: string[] } {
+/** WitnessEcMulCheck's body: its script after the three constructor-slot placeholders at bytes 0, 1, 2. */
+function bodyOf(art: RunarArtifact): string {
   const slots = [...art.constructorSlots!].sort((a, b) => a.byteOffset - b.byteOffset);
-  const segs: string[] = [];
-  let pos = 0;
-  for (const s of slots) {
-    expect(art.script.slice(s.byteOffset * 2, s.byteOffset * 2 + 2)).toBe('00'); // OP_0 placeholder
-    segs.push(art.script.slice(pos * 2, s.byteOffset * 2));
-    pos = s.byteOffset + 1;
-  }
-  segs.push(art.script.slice(pos * 2));
-  return { names: slots.map((s) => s.name), segs };
+  // The shape GateReferee splices. A compiler change that moves a slot fails here first.
+  expect(slots.map((x) => [x.name, x.byteOffset])).toEqual([['base', 0], ['k', 1], ['out', 2]]);
+  expect(art.script.slice(0, 6)).toBe('000000'); // three OP_0 placeholders
+  return art.script.slice(6);
 }
-
-/** The checker template pieces the referee is deployed with, or is handed by a prepare caller. */
-type Tmpl = {
-  mulA: string; mulMid: string; mulB: string; mulTail: string;
-  genHead: string; genMid: string; genBody: string; genTail: string;
-};
 
 const pushPoint = (p: Point | string) => '40' + (typeof p === 'string' ? p : aff(p));
 
@@ -116,20 +105,32 @@ function pushNum(n: bigint): string {
   return bytes.length.toString(16).padStart(2, '0') + Buffer.from(bytes).toString('hex');
 }
 
-/** EcMulCheck(base, k, out): push(base) A push(k) mid push(base) push(k) B push(out) tail. */
-const mulScript = (t: Tmpl, base: Point, k: bigint, out: Point | string) =>
-  pushPoint(base) + t.mulA + pushNum(k) + t.mulMid + pushPoint(base) + pushNum(k) + t.mulB + pushPoint(out) + t.mulTail;
+/** WitnessEcMulCheck(base, k, out): push(base) push(k) push(out) body. */
+const chkScript = (base: Point, k: bigint, out: Point | string, b = body) => pushPoint(base) + pushNum(k) + pushPoint(out) + b;
 
-/** EcMulGenCheck(k, out): head push(k) mid push(k) body push(out) tail. */
-const genScript = (t: Tmpl, k: bigint, out: Point | string) =>
-  t.genHead + pushNum(k) + t.genMid + pushNum(k) + t.genBody + pushPoint(out) + t.genTail;
+/**
+ * A checker's unlocking script: the slope witness for the (base, k) its script pushes, read back from
+ * the script itself so it follows whatever checker is spent. No witness exists for k outside [1, n).
+ */
+function checkerUnlock(script: string): string {
+  const base = fromAffine64(Uint8Array.from(Utils.toArray(script.slice(2, 130), 'hex')));
+  const op = Number.parseInt(script.slice(130, 132), 16);
+  let k: bigint;
+  if (op >= 0x51 && op <= 0x60) k = BigInt(op - 0x50);
+  else if (op >= 0x01 && op <= 0x4b) k = BigInt('0x' + (rev(script.slice(132, 132 + op * 2)) || '0'));
+  else k = 0n;
+  try {
+    return encodePushData(ecMulWitness(base, k));
+  } catch {
+    return encodePushData('00');
+  }
+}
 
 // ---- transactions -----------------------------------------------------------------------------
 
-let mulArt: RunarArtifact;
-let genArt: RunarArtifact;
+let chkArt: RunarArtifact;
 let refArt: RunarArtifact;
-let tmpl: Tmpl;
+let body: string;
 
 /** Constructor args. `L0`, `M0` and `pkh0` are the initial state (normally zeros). */
 function refereeArgs(r: Recorded, L0 = ZERO_POINT, M0 = ZERO_POINT, pkh0 = '00'.repeat(20)): unknown[] {
@@ -137,9 +138,7 @@ function refereeArgs(r: Recorded, L0 = ZERO_POINT, M0 = ZERO_POINT, pkh0 = '00'.
     Utils.toHex(Utils.toArray(r.st.domain, 'utf8')),
     aff(r.st.B2), aff(r.st.P1), aff(r.st.P2), aff(r.A1), aff(r.A2), r.z,
     BigInt(BOND),
-    BigInt(tmpl.mulA.length / 2), BigInt(tmpl.mulB.length / 2), sha256Hex(tmpl.mulA + tmpl.mulB),
-    tmpl.mulMid, tmpl.mulTail,
-    tmpl.genHead, tmpl.genMid, BigInt(tmpl.genBody.length / 2), sha256Hex(tmpl.genBody), tmpl.genTail,
+    BigInt(body.length / 2), sha256Hex(body),
     L0, M0, pkh0,
   ];
 }
@@ -252,15 +251,15 @@ async function callReferee(env: Env, o: {
   }
 }
 
-async function prepareTx(env: Env, eq: 1 | 2, L: Point | string, M: Point | string, t: Tmpl = tmpl) {
+async function prepareTx(env: Env, eq: 1 | 2, L: Point | string, M: Point | string, b: string = body) {
   const r = env.rec;
   const hexOf = (p: Point | string) => (typeof p === 'string' ? p : aff(p));
   const c = cOf(r);
-  const lScript = eq === 1 ? genScript(t, r.z, L) : mulScript(t, r.st.B2, r.z, L);
-  const mScript = mulScript(t, eq === 1 ? r.st.P1 : r.st.P2, c, M);
+  const lScript = chkScript(eq === 1 ? G : r.st.B2, r.z, L, b);
+  const mScript = chkScript(eq === 1 ? r.st.P1 : r.st.P2, c, M, b);
   return callReferee(env, {
     method: 'prepare',
-    args: () => [BigInt(eq), hexOf(L), hexOf(M), t.mulA, t.mulB, eq === 1 ? t.genBody : '', REFUND_PKH],
+    args: () => [BigInt(eq), hexOf(L), hexOf(M), b, REFUND_PKH],
     outputs: [{ script: lScript, satoshis: CHECKER_SATS }, { script: mScript, satoshis: CHECKER_SATS }],
     next: {
       satoshis: env.ref.satoshis + BOND,
@@ -274,7 +273,7 @@ async function fraudTx(env: Env, checkers: [UTXO, UTXO]) {
   return callReferee(env, {
     method: 'fraud',
     args: (feeOutpoint) => [feeOutpoint],
-    extraInputs: checkers.map((u) => ({ utxo: u, unlock: '' })), // verify() takes no arguments
+    extraInputs: checkers.map((u) => ({ utxo: u, unlock: checkerUnlock(u.script) })),
     outputs: [{ script: p2pkh(REFUND_PKH), satoshis: BOND }],
     next: { satoshis: env.ref.satoshis - BOND, state: { ...st, phase: 2n } },
   });
@@ -321,32 +320,18 @@ async function prepareAndFraud(env: Env, eq: 1 | 2, L: Point, M: Point) {
 
 describe('gate d: referee-created checkers and fraud proofs', () => {
   beforeAll(() => {
-    // One compile per contract per file: the checkers are ~427 KB each.
-    execFileSync('node', [join(contractsRoot, 'compile.mjs'), 'EcMulCheck', 'EcMulGenCheck', 'GateReferee'], { stdio: 'inherit' });
-    mulArt = loadArtifact('EcMulCheck');
-    genArt = loadArtifact('EcMulGenCheck');
+    execFileSync('node', [join(contractsRoot, 'compile.mjs'), 'WitnessEcMulCheck', 'GateReferee'], { stdio: 'inherit' });
+    chkArt = loadArtifact('WitnessEcMulCheck');
     refArt = loadArtifact('GateReferee');
-    const m = segmentsOf(mulArt);
-    const g = segmentsOf(genArt);
-    // The shapes GateReferee splices. A compiler change that moves a slot fails here first.
-    expect(m.names).toEqual(['base', 'k', 'base', 'k', 'out']);
-    expect([m.segs[0], m.segs[3]]).toEqual(['', '']); // base is byte 0; the second base and k are adjacent
-    expect(g.names).toEqual(['k', 'k', 'out']);
-    tmpl = {
-      mulA: m.segs[1]!, mulMid: m.segs[2]!, mulB: m.segs[4]!, mulTail: m.segs[5]!,
-      genHead: g.segs[0]!, genMid: g.segs[1]!, genBody: g.segs[2]!, genTail: g.segs[3]!,
-    };
-    console.log(`GateReferee script: ${refArt.script.length / 2} bytes (template); ` +
-      `segment bytes: mulA ${tmpl.mulA.length / 2}, mulMid ${tmpl.mulMid.length / 2}, mulB ${tmpl.mulB.length / 2}, ` +
-      `mulTail ${tmpl.mulTail.length / 2}, genHead ${tmpl.genHead.length / 2}, genMid ${tmpl.genMid.length / 2}, ` +
-      `genBody ${tmpl.genBody.length / 2}, genTail ${tmpl.genTail.length / 2}`);
+    body = bodyOf(chkArt);
+    console.log(`GateReferee script: ${refArt.script.length / 2} bytes (template); checker body ${body.length / 2} bytes`);
   }, 600_000);
 
   it('the off-chain splice equals the SDK-built checker script for every k shape the referee pushes', () => {
     const X = cardPoint(3);
     for (const k of [1n, 16n, 17n, 127n, 128n, 0x8000n, 0x1234567890abcdefn, N - 1n]) {
-      expect(mulScript(tmpl, X, k, mul(X, k))).toBe(new RunarContract(mulArt, [aff(X), k, aff(mul(X, k))]).getLockingScript());
-      expect(genScript(tmpl, k, mul(G, k))).toBe(new RunarContract(genArt, [k, aff(mul(G, k))]).getLockingScript());
+      expect(chkScript(X, k, mul(X, k))).toBe(new RunarContract(chkArt, [aff(X), k, aff(mul(X, k))]).getLockingScript());
+      expect(chkScript(G, k, mul(G, k))).toBe(new RunarContract(chkArt, [aff(G), k, aff(mul(G, k))]).getLockingScript());
     }
   });
 
@@ -360,17 +345,17 @@ describe('gate d: referee-created checkers and fraud proofs', () => {
     const prep = await prepareTx(env, 1, L, M);
     await send(env, prep); // the referee built output 2 with ITS c; hashOutputs only matches if it equals challenge()
     expect(prep.outputs[2]!.lockingScript.toHex())
-      .toBe(new RunarContract(mulArt, [aff(r.st.P1), cOf(r), aff(M)]).getLockingScript());
+      .toBe(new RunarContract(chkArt, [aff(r.st.P1), cOf(r), aff(M)]).getLockingScript());
     expect(prep.outputs[1]!.lockingScript.toHex())
-      .toBe(new RunarContract(genArt, [r.z, aff(L)]).getLockingScript());
+      .toBe(new RunarContract(chkArt, [aff(G), r.z, aff(L)]).getLockingScript());
     const st = stateOf(env.ref);
     expect(st.phase).toBe(1n);
     expect(st.eq).toBe(1n);
     expect(st.L).toBe(aff(L));
     expect(st.M).toBe(aff(M));
     expect(env.ref.satoshis).toBe(REF_SATS + BOND);
-    console.log(`checker scripts as deployed: EcMulGenCheck ${prep.outputs[1]!.lockingScript.toBinary().length} B, ` +
-      `EcMulCheck ${prep.outputs[2]!.lockingScript.toBinary().length} B`);
+    console.log(`checker scripts as deployed: L ${prep.outputs[1]!.lockingScript.toBinary().length} B, ` +
+      `M ${prep.outputs[2]!.lockingScript.toBinary().length} B`);
   }, 600_000);
 
   it('proves fraud against a recorded invalid proof (eq 1, tampered z) and returns the bond', async () => {
@@ -425,7 +410,7 @@ describe('gate d: referee-created checkers and fraud proofs', () => {
       const env = await setup({ ...honest(), z });
       const { L, M } = products(env.rec, 1);
       const { prep, fr } = await prepareAndFraud(env, 1, L, M); // prepare fails unless the splice matches
-      expect(prep.outputs[1]!.lockingScript.toHex()).toBe(new RunarContract(genArt, [z, aff(L)]).getLockingScript());
+      expect(prep.outputs[1]!.lockingScript.toHex()).toBe(new RunarContract(chkArt, [aff(G), z, aff(L)]).getLockingScript());
       await send(env, fr);
       expect(stateOf(env.ref).phase).toBe(2n);
     }
@@ -446,8 +431,8 @@ describe('gate d: referee-created checkers and fraud proofs', () => {
     const r = honest();
     const { L, M } = products(r, 1);
     const lies: Array<[Point, Point, number]> = [
-      [mul(G, r.z + 1n), M, 1], // a false L: checker 1 (EcMulGenCheck) refuses
-      [L, mul(r.st.P1, cOf(r) + 1n), 2], // a false M: checker 2 (EcMulCheck) refuses
+      [mul(G, r.z + 1n), M, 1], // a false L: checker 1 refuses the true product's witness
+      [L, mul(r.st.P1, cOf(r) + 1n), 2], // a false M: checker 2 refuses likewise
     ];
     for (const [lieL, lieM, bad] of lies) {
       const env = await setup(r);
@@ -495,7 +480,7 @@ describe('gate d: referee-created checkers and fraud proofs', () => {
         const fr = await callReferee(env, {
           method: 'fraud',
           args: (fo) => [fo],
-          extraInputs: [{ utxo: utxoAt(prep, 1), unlock: '' }, { utxo: utxoAt(prep, 2), unlock: '' }],
+          extraInputs: [utxoAt(prep, 1), utxoAt(prep, 2)].map((u) => ({ utxo: u, unlock: checkerUnlock(u.script) })),
           outputs: [{ script: p2pkh(REFUND_PKH), satoshis: BOND }],
           next: { satoshis: env.ref.satoshis - BOND, state: {} },
           contract: deployed, codePart, contScript,
@@ -522,8 +507,8 @@ describe('gate d: referee-created checkers and fraud proofs', () => {
     forged.setState({ phase: 1n, eq: 1n, L: aff(L), M: aff(M), bondPKH: REFUND_PKH });
     const T = await handTx(env, [
       { script: p2pkh(REFUND_PKH), satoshis: 1 },
-      { script: genScript(tmpl, r.z, L), satoshis: CHECKER_SATS },
-      { script: mulScript(tmpl, r.st.P1, cOf(r), M), satoshis: CHECKER_SATS },
+      { script: chkScript(G, r.z, L), satoshis: CHECKER_SATS },
+      { script: chkScript(r.st.P1, cOf(r), M), satoshis: CHECKER_SATS },
       { script: forged.getLockingScript(), satoshis: REF_SATS + BOND },
     ]);
     env.ref = utxoAt(T, 3);
@@ -561,19 +546,17 @@ describe('gate d: referee-created checkers and fraud proofs', () => {
     expect(stateOf(env.ref).phase).toBe(2n);
   }, 600_000);
 
-  it('refuses a prepare with a forged template segment, including a boundary shift', async () => {
+  it('refuses a prepare with a forged checker body: a flipped byte, one byte short, one byte long', async () => {
     const env = await setup(tamperedZ(honest()));
     const flip = (hex: string, at: number) =>
       hex.slice(0, at * 2) + (Number.parseInt(hex.slice(at * 2, at * 2 + 2), 16) ^ 0x01).toString(16).padStart(2, '0') + hex.slice(at * 2 + 2);
-    const forged: Array<[string, 1 | 2, Tmpl]> = [
-      ['a flipped byte in mulB', 1, { ...tmpl, mulB: flip(tmpl.mulB, 1000) }],
-      ['a flipped byte in genBody', 1, { ...tmpl, genBody: flip(tmpl.genBody, 1000) }],
-      // Same concatenation, so the same hash: only the length binding catches it.
-      ['mulA\'s last byte moved to mulB', 1, { ...tmpl, mulA: tmpl.mulA.slice(0, -2), mulB: tmpl.mulA.slice(-2) + tmpl.mulB }],
-      ['mulB\'s first byte moved to mulA', 2, { ...tmpl, mulA: tmpl.mulA + tmpl.mulB.slice(0, 2), mulB: tmpl.mulB.slice(2) }],
+    const forged: Array<[string, 1 | 2, string]> = [
+      ['a flipped byte', 1, flip(body, 1000)],
+      ['a flipped byte (eq 2)', 2, flip(body, 30_000)],
+      ['one byte short', 1, body.slice(0, -2)],
+      ['one byte long', 2, body + '61'],
     ];
     for (const [why, eq, t] of forged) {
-      if (why.includes('moved')) expect(sha256Hex(t.mulA + t.mulB), why).toBe(sha256Hex(tmpl.mulA + tmpl.mulB));
       const { L, M } = products(env.rec, eq);
       // The outputs are what the referee itself would splice from these segments, so only the
       // template binding can refuse.
@@ -595,8 +578,8 @@ describe('gate d: referee-created checkers and fraud proofs', () => {
     const { L, M } = products(r, 1);
     const D = await handTx(env, [
       { script: new RunarContract(refArt, refereeArgs(r, aff(L), aff(M), REFUND_PKH)).getLockingScript(), satoshis: REF_SATS },
-      { script: genScript(tmpl, r.z, L), satoshis: CHECKER_SATS },
-      { script: mulScript(tmpl, r.st.P1, cOf(r), M), satoshis: CHECKER_SATS },
+      { script: chkScript(G, r.z, L), satoshis: CHECKER_SATS },
+      { script: chkScript(r.st.P1, cOf(r), M), satoshis: CHECKER_SATS },
     ]);
     env.ref = utxoAt(D, 0);
     expect(stateOf(env.ref)).toMatchObject({ phase: 0n, L: aff(L), M: aff(M), bondPKH: REFUND_PKH });
