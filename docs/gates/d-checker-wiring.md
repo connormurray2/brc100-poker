@@ -24,7 +24,7 @@ Every transaction runs through `@bsv/sdk` `Spend` (MockProvider), with every inp
 - `bondPKH`.
 
 **`prepare(eq, L, M, mulA, mulB, genBody, refundPKH)`**, from phase 0 to phase 1:
-- It requires `lPt` and `mPt` to be 64 bytes, `refundPKH` to be 20 bytes, and the recorded `B2`, `P1`, `P2`, `A1` and `A2` to be 64 bytes. Rúnar does not enforce these widths itself (finding 1).
+- It requires `lPt` and `mPt` to be 64 bytes, `refundPKH` to be 20 bytes, and the recorded `B2`, `P1`, `P2`, `A1` and `A2` to be 64 bytes. Rúnar does not enforce these widths itself (finding 0).
 - It recomputes `c = sha256(domain ‖ 00 ‖ G ‖ P1 ‖ B2 ‖ P2 ‖ A1 ‖ A2)` on chain, read big-endian and reduced mod n. Each point is 64-byte affine. Because `bin2num` is little-endian and signed, the hash is reversed and a `00` byte appended first.
 - It builds both checker locking scripts by splicing minimal pushes into the caller's template segments:
   - eq 1: `EcMulGenCheck(z, L)` and `EcMulCheck(P1, c, M)`;
@@ -109,7 +109,7 @@ Measured in the tests. The deployed checker sizes depend on the push length of `
 **Against spec §10.6's ~3.5 MB.**
 - A lie needs one false equation, so it needs two checkers, not four.
 - One fraud proof therefore measures 1.92 MB (eq 1) or 1.50 MB (eq 2), about 55% and 43% of the estimate.
-- At 1 sat/kB that is about 2 sats; at 100 sat/kB about 192 sats.
+- 1.92 MB is 1,920 kB, so at 1 sat/kB that is about 1,920 sats; at 100 sat/kB about 192,000 sats.
 - **The real referee will be larger.** Each referee spend carries the referee script three times:
   - the code-part push in the unlocking script;
   - the scriptCode inside the preimage push;
