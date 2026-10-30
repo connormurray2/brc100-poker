@@ -1,0 +1,59 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Gate b: BSV Desktop buy-in</title>
+  <style>
+    :root { color-scheme: light dark; --fg: #1b1b1f; --bg: #fafafa; --muted: #5d6068; --ok: #0a7a3d; --bad: #b3261e; --line: #d8d8de; --box: #f0f0f4; }
+    @media (prefers-color-scheme: dark) { :root { --fg: #ececf1; --bg: #16161a; --muted: #a0a3ad; --ok: #4cc27f; --bad: #ff8a80; --line: #34343c; --box: #202026; } }
+    body { margin: 0; padding: 24px 16px 64px; background: var(--bg); color: var(--fg); font: 15px/1.5 system-ui, sans-serif; }
+    main { max-width: 760px; margin: 0 auto; }
+    h1 { font-size: 20px; margin: 0 0 4px; }
+    h2 { font-size: 15px; margin: 24px 0 8px; }
+    p { margin: 8px 0; }
+    .muted { color: var(--muted); }
+    .warn { border: 1px solid var(--bad); border-radius: 6px; padding: 8px 12px; }
+    code, pre { font: 13px/1.4 ui-monospace, Menlo, monospace; }
+    code { background: var(--box); padding: 1px 4px; border-radius: 3px; word-break: break-all; }
+    pre { background: var(--box); padding: 12px; border-radius: 6px; overflow-x: auto; white-space: pre-wrap; word-break: break-word; }
+    button { font: inherit; padding: 8px 14px; border-radius: 6px; border: 1px solid var(--line); background: var(--box); color: var(--fg); cursor: pointer; }
+    button:disabled { opacity: 0.5; cursor: default; }
+    ol, ul { padding-left: 20px; margin: 8px 0; }
+    #steps li.done::marker { color: var(--ok); }
+    #steps li.fail { color: var(--bad); }
+    #facts { list-style: none; padding: 0; }
+    #facts li { border-top: 1px solid var(--line); padding: 8px 0; }
+    .tag { display: inline-block; min-width: 3.2em; font-weight: 700; }
+    .pass .tag { color: var(--ok); }
+    .fail .tag { color: var(--bad); }
+    #error { color: var(--bad); font-weight: 600; }
+  </style>
+</head>
+<body>
+<main>
+  <h1>Gate b: does BSV Desktop keep a foreign input first?</h1>
+  <p class="muted">Testnet only. A buy-in spends the table escrow (a foreign input) next to the player's coins, and the escrow's covenant pins the first outputs by position. This page asks the wallet to build such a transaction and reports whether the order survived. It needs BSV Desktop running on <strong>testnet</strong>, and you approve two wallet prompts.</p>
+
+  <div class="warn">
+    <p><strong>Test key.</strong> This page made a fresh random key. It lives in memory only: it is never stored, logged or put in the URL. The 1,000-sat test escrow is locked to it, address <code id="addr"></code>. <strong>If you reload or close this page after the escrow is made, the key is gone and those 1,000 testnet sats are lost.</strong> Do not reload mid-run.</p>
+  </div>
+
+  <p><button id="run" type="button">Run the buy-in test</button></p>
+  <p id="error" role="alert"></p>
+
+  <h2>Steps</h2>
+  <ol id="steps"></ol>
+
+  <h2>Facts</h2>
+  <ul id="facts"><li class="muted">Nothing yet.</li></ul>
+
+  <h2>Broadcaster status</h2>
+  <p id="status" class="muted">Not queried yet.</p>
+
+  <h2>Copy into docs/gates/b-bsv-desktop-buyin.md</h2>
+  <pre id="report">Nothing yet.</pre>
+</main>
+<script type="module" src="./main.ts"></script>
+</body>
+</html>

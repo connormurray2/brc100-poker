@@ -5,13 +5,16 @@
   "description": "Go/no-go gate harnesses: testnet, BSV Desktop and MessageBox",
   "scripts": {
     "test": "vitest run",
-    "gate:c": "tsx src/messagebox-latency.ts"
+    "gate:c": "tsx src/messagebox-latency.ts",
+    "gate:b": "vite buyin --config buyin/vite.config.ts",
+    "typecheck:b": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
     "@bsv/message-box-client": "^2.7.0",
     "@bsv/sdk": "^2.8.6"
   },
   "devDependencies": {
-    "tsx": "^4.23.15"
+    "tsx": "^4.23.15",
+    "vite": "^8.3.5"
   }
 }
