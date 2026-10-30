@@ -1,0 +1,12 @@
+{
+  "name": "@brc100-poker/gates",
+  "private": true,
+  "type": "module",
+  "description": "Go/no-go gate harnesses: testnet, BSV Desktop and MessageBox",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@bsv/sdk": "^2.0.7"
+  }
+}

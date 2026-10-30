@@ -13,3 +13,7 @@ secrets/
 # Build output
 /dist/
 /bin/
+
+# npm workspace (packages/protocol, contracts, scripts/gates)
+node_modules/
+contracts/artifacts/

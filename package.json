@@ -1,0 +1,28 @@
+{
+  "name": "brc100-poker-workspace",
+  "private": true,
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "contracts",
+    "scripts/gates"
+  ],
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "vitest": "^2.1.0"
+  },
+  "overrides": {
+    "runar-compiler": "$runar-compiler",
+    "runar-ir-schema": "$runar-ir-schema",
+    "runar-lang": "$runar-lang",
+    "runar-sdk": "$runar-sdk",
+    "runar-testing": "$runar-testing"
+  },
+  "dependencies": {
+    "runar-compiler": "file:contracts/vendor/runar/runar-compiler-1.0.0-rc.1.tgz",
+    "runar-ir-schema": "file:contracts/vendor/runar/runar-ir-schema-1.0.0-rc.1.tgz",
+    "runar-lang": "file:contracts/vendor/runar/runar-lang-1.0.0-rc.1.tgz",
+    "runar-sdk": "file:contracts/vendor/runar/runar-sdk-1.0.0-rc.1.tgz",
+    "runar-testing": "file:contracts/vendor/runar/runar-testing-1.0.0-rc.1.tgz"
+  }
+}
