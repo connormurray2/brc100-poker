@@ -8,7 +8,7 @@
 // Exit code is non-zero on any lost, duplicated or unexpected message, or on a fatal error.
 import { PrivateKey, ProtoWallet } from '@bsv/sdk';
 import { MessageBoxClient, type PeerMessage } from '@bsv/message-box-client';
-import { reconcile, summarise, type LatencySummary } from './latency-stats.js';
+import { classifyLiveSamples, liveFallbackVerdict, reconcile, summarise, type LatencySummary, type LiveSample } from './latency-stats.js';
 
 const LIVE_COUNT = Number(process.env.GATE_C_COUNT ?? 50);
 const STORED_COUNT = 5;
@@ -33,18 +33,33 @@ function parse(m: PeerMessage): Wire | undefined {
   return w && (w.kind === 'ping' || w.kind === 'echo') && Number.isInteger(w.seq) && typeof w.sentAt === 'number' ? (w as Wire) : undefined;
 }
 
-interface Side { name: string; client: MessageBoxClient; key: string; httpFallbacks: number }
+interface Side {
+  name: string; client: MessageBoxClient; key: string;
+  /** While true, every sendMessage call is a fallback from sendLiveMessage (installed/read at MessageBoxClient.js:1443,1447,1468,1492). */
+  counting: boolean;
+  httpFallbacks: number;
+  /** Seqs of the ping/echo sends that fell back, parsed from the HTTP body. */
+  fellBackSeqs: Set<number>;
+}
 
 async function makeSide(name: string): Promise<Side> {
   const wallet = new ProtoWallet(PrivateKey.fromRandom());
   const client = new MessageBoxClient({ walletClient: wallet as never });
   const key = (await wallet.getPublicKey({ identityKey: true })).publicKey;
-  const side: Side = { name, client, key, httpFallbacks: 0 };
-  // sendLiveMessage silently falls back to HTTP sendMessage; count every HTTP send so a run that was
-  // not really live cannot pass as live.
+  const side: Side = { name, client, key, counting: false, httpFallbacks: 0, fellBackSeqs: new Set() };
+  // sendLiveMessage silently falls back to this.sendMessage (message-box-client dist/src/MessageBoxClient.js
+  // lines 1443, 1447, 1468, 1492). While `counting` (the live phase only) every sendMessage call is therefore a
+  // fallback; record which seq it carried so that sample can be excluded.
   const original = client.sendMessage.bind(client);
   client.sendMessage = ((...args: Parameters<MessageBoxClient['sendMessage']>) => {
-    side.httpFallbacks++;
+    if (side.counting) {
+      side.httpFallbacks++;
+      try {
+        const body = args[0]?.body;
+        const w = parse({ body } as PeerMessage);
+        if (w) side.fellBackSeqs.add(w.seq);
+      } catch { /* unattributed: still counted in httpFallbacks */ }
+    }
     return original(...args);
   }) as typeof client.sendMessage;
   return side;
@@ -54,20 +69,18 @@ async function runLive(a: Side, b: Side) {
   const sent: number[] = [];
   const pingsAtB: number[] = [];
   const echoesAtA: number[] = [];
-  const rtts: number[] = [];
-  const oneWayAB: number[] = [];
+  const rtts: LiveSample[] = [];
+  const oneWayAB: LiveSample[] = [];
   const waiters = new Map<number, () => void>();
-  const stored: string[] = [];
 
   await b.client.listenForLiveMessages({
     messageBox: BOX,
     onMessage: (m) => {
       const w = parse(m); const t = now();
       if (!w || w.kind !== 'ping') return;
-      pingsAtB.push(w.seq); oneWayAB.push(t - w.sentAt);
+      pingsAtB.push(w.seq); oneWayAB.push({ seq: w.seq, rttMs: t - w.sentAt });
       void b.client.sendLiveMessage({ recipient: a.key, messageBox: BOX, body: { kind: 'echo', seq: w.seq, sentAt: w.sentAt } })
         .catch((e) => console.error(`  echo ${w.seq} failed:`, e?.message ?? e));
-      stored.push(m.messageId);
     },
   });
   await a.client.listenForLiveMessages({
@@ -77,11 +90,12 @@ async function runLive(a: Side, b: Side) {
       if (!w || w.kind !== 'echo') return;
       echoesAtA.push(w.seq);
       if (!waiters.has(w.seq)) return; // late or duplicate: counted above, no RTT
-      rtts.push(t - w.sentAt);
+      rtts.push({ seq: w.seq, rttMs: t - w.sentAt });
       waiters.get(w.seq)!(); waiters.delete(w.seq);
     },
   });
   await sleep(500); // let both rooms settle on the server
+  a.counting = true; b.counting = true;
 
   for (let seq = 0; seq < LIVE_COUNT; seq++) {
     sent.push(seq);
@@ -92,6 +106,7 @@ async function runLive(a: Side, b: Side) {
     if (!ok) { waiters.delete(seq); console.error(`  seq ${seq}: no echo within ${ECHO_TIMEOUT_MS} ms`); }
   }
   await sleep(1500); // catch stragglers that would show up as duplicates
+  a.counting = false; b.counting = false;
   return { sent, pingsAtB, echoesAtA, rtts, oneWayAB };
 }
 
@@ -99,7 +114,7 @@ async function runStoredPoll(a: Side, b: Side) {
   const sent: number[] = [];
   const pingsAtB: number[] = [];
   const echoesAtA: number[] = [];
-  const rtts: number[] = [];
+  const rtts: LiveSample[] = [];
   for (let seq = 0; seq < LIVE_COUNT; seq++) {
     sent.push(seq);
     const sentAt = now();
@@ -118,14 +133,14 @@ async function runStoredPoll(a: Side, b: Side) {
       const atA = await a.client.listMessages({ messageBox: BOX });
       for (const m of atA) {
         const w = parse(m);
-        if (w?.kind === 'echo') { echoesAtA.push(w.seq); if (w.seq === seq) { rtts.push(now() - w.sentAt); got = true; } }
+        if (w?.kind === 'echo') { echoesAtA.push(w.seq); if (w.seq === seq) { rtts.push({ seq, rttMs: now() - w.sentAt }); got = true; } }
       }
       if (atA.length) await a.client.acknowledgeMessage({ messageIds: atA.map((m) => m.messageId) });
       if (!got) await sleep(POLL_MS);
     }
     if (!got) console.error(`  seq ${seq}: no echo within ${ECHO_TIMEOUT_MS} ms`);
   }
-  return { sent, pingsAtB, echoesAtA, rtts, oneWayAB: [] as number[] };
+  return { sent, pingsAtB, echoesAtA, rtts, oneWayAB: [] as LiveSample[] };
 }
 
 async function drain(side: Side, box: string): Promise<number> {
@@ -159,29 +174,36 @@ async function main() {
   let run: Awaited<ReturnType<typeof runLive>> | undefined;
   try {
     run = await runLive(a, b);
-    if (a.httpFallbacks + b.httpFallbacks > 0) {
-      console.error(`live send fell back to HTTP ${a.httpFallbacks + b.httpFallbacks} time(s): run is not purely live`);
-    }
   } catch (e) {
     console.error('live mode unavailable:', (e as Error)?.message ?? e);
     mode = 'stored-poll';
   }
-  if (mode === 'live' && run && run.rtts.length === 0) mode = 'stored-poll';
+  a.counting = false; b.counting = false;
+  // Whatever the live run did, every send that fell back to HTTP is a live failure (and not a live sample).
+  const liveFallbackCount = a.httpFallbacks + b.httpFallbacks;
+  const fellBackSeqs = new Set([...a.fellBackSeqs, ...b.fellBackSeqs]);
+  const liveVerdict = liveFallbackVerdict(liveFallbackCount);
+  if (!liveVerdict.ok) console.error(`LIVE FAIL: ${liveVerdict.reason} (seqs [${[...fellBackSeqs].sort((x, y) => x - y)}])`);
+  if (mode === 'live' && run && classifyLiveSamples(run.rtts, fellBackSeqs).live.length === 0) mode = 'stored-poll';
   if (mode === 'stored-poll') {
     console.log('falling back to stored messages with polling');
     await a.client.disconnectWebSocket().catch(() => {}); await b.client.disconnectWebSocket().catch(() => {});
+    // Clear leftover pings/echoes from the failed live attempt so they cannot show up as false duplicates.
+    const cleared = (await drain(b, BOX)) + (await drain(a, BOX));
+    console.log(`cleared ${cleared} leftover message(s) before the stored-poll run`);
     run = await runStoredPoll(a, b);
   }
   const r = run!;
-  const liveFallbacks = a.httpFallbacks + b.httpFallbacks;
 
   const pings = reconcile(r.sent, r.pingsAtB);
   const echoes = reconcile(r.sent, r.echoesAtA);
-  const rtt = r.rtts.length ? summarise(r.rtts) : undefined;
+  const liveRtts = mode === 'live' ? classifyLiveSamples(r.rtts, fellBackSeqs).live : r.rtts;
+  const liveOneWay = mode === 'live' ? classifyLiveSamples(r.oneWayAB, fellBackSeqs).live : r.oneWayAB;
+  const rtt = liveRtts.length ? summarise(liveRtts.map((x) => x.rttMs)) : undefined;
   console.log(`\n== ${mode} round trip, ${LIVE_COUNT} pings A->B, echoes B->A ==`);
-  console.log('RTT at A:', rtt ? fmt(rtt) : 'no samples');
-  if (r.oneWayAB.length) console.log('one way A->B (same process clock):', fmt(summarise(r.oneWayAB)));
-  console.log(`HTTP fallbacks during live run: ${liveFallbacks}`);
+  console.log(`RTT at A (${liveRtts.length} of ${LIVE_COUNT} samples counted${mode === 'live' ? ', fallback samples excluded' : ''}):`, rtt ? fmt(rtt) : 'no samples');
+  if (liveOneWay.length) console.log('one way A->B (same process clock):', fmt(summarise(liveOneWay.map((x) => x.rttMs))));
+  console.log(`HTTP fallbacks during live run: ${liveFallbackCount}`);
   console.log(`pings:  received ${r.pingsAtB.length}/${LIVE_COUNT}, lost [${pings.lost}], duplicated [${pings.duplicated}], unexpected [${pings.unexpected}]`);
   console.log(`echoes: received ${r.echoesAtA.length}/${LIVE_COUNT}, lost [${echoes.lost}], duplicated [${echoes.duplicated}], unexpected [${echoes.unexpected}]`);
   if (!pings.ok || !echoes.ok) failed = true;
@@ -215,14 +237,15 @@ async function main() {
   if (!rec.ok || after.length !== 0) failed = true;
 
   console.log('\n== gate (c), MessageBox half ==');
-  console.log(`mode: ${mode}${liveFallbacks ? ` (with ${liveFallbacks} HTTP fallbacks)` : ''}`);
+  console.log(`mode: ${mode}`);
+  console.log(`live sends: ${liveVerdict.ok ? 'all live (0 HTTP fallbacks)' : `FAIL, ${liveVerdict.reason}`}`);
   console.log(`fees: ${JSON.stringify(fees)} -> ${allFeesZero ? 'all zero' : 'NOT ALL ZERO'}`);
   const medianOk = !!rtt && rtt.median <= PASS_MEDIAN_MS;
   console.log(`median RTT ${rtt ? rtt.median.toFixed(0) : 'n/a'} ms vs ${PASS_MEDIAN_MS} ms -> ${medianOk ? 'ok' : 'FAIL'}`);
-  const verdict = !failed && medianOk && allFeesZero;
-  console.log(`delivery: ${failed ? 'FAIL (lost/duplicated)' : 'ok'}; overall: ${verdict ? 'PASS' : 'FAIL'}`);
+  const verdict = !failed && medianOk && allFeesZero && liveVerdict.ok;
+  console.log(`delivery: ${failed ? 'FAIL (lost/duplicated)' : 'ok'}; live: ${liveVerdict.ok ? 'ok' : 'FAIL'}; overall: ${verdict ? 'PASS' : 'FAIL'}`);
   await a.client.disconnectWebSocket().catch(() => {}); await b.client.disconnectWebSocket().catch(() => {});
-  process.exit(failed ? 1 : 0);
+  process.exit(failed || !liveVerdict.ok ? 1 : 0);
 }
 
 main().catch((e) => { console.error('fatal:', e); process.exit(2); });

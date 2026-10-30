@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { median, percentile, reconcile, summarise } from '../src/latency-stats.js';
+import { classifyLiveSamples, liveFallbackVerdict, median, percentile, reconcile, summarise } from '../src/latency-stats.js';
 
 describe('reconcile', () => {
   it('accepts an exact match in any order', () => {
@@ -41,5 +41,28 @@ describe('percentiles', () => {
   it('rejects empty input', () => {
     expect(() => median([])).toThrow();
     expect(() => summarise([])).toThrow();
+  });
+});
+
+describe('live fallback classification', () => {
+  const samples = [0, 1, 2, 3, 4].map((seq) => ({ seq, rttMs: 100 + seq }));
+  it('keeps every sample when nothing fell back', () => {
+    expect(classifyLiveSamples(samples, [])).toEqual({ live: samples, fellBack: [] });
+    expect(liveFallbackVerdict(0)).toEqual({ ok: true });
+  });
+  it('excludes a sample whose ping or echo fell back, even a 10 s one, from the live stats', () => {
+    const withSlow = samples.map((s) => (s.seq === 2 ? { seq: 2, rttMs: 10_300 } : s));
+    const c = classifyLiveSamples(withSlow, [2, 2, 4]); // seq 2 fell back twice (ping and echo), seq 4 once
+    expect(c.fellBack).toEqual([2, 4]);
+    expect(c.live.map((s) => s.seq)).toEqual([0, 1, 3]);
+    expect(summarise(c.live.map((s) => s.rttMs)).max).toBe(103);
+  });
+  it('lists fallbacks for a seq that has no sample at all', () => {
+    expect(classifyLiveSamples(samples, [9]).fellBack).toEqual([9]);
+    expect(classifyLiveSamples(samples, [9]).live).toHaveLength(5);
+  });
+  it('fails the live verdict on any fallback, naming how many', () => {
+    expect(liveFallbackVerdict(1)).toEqual({ ok: false, reason: '1 live send(s) fell back to HTTP' });
+    expect(liveFallbackVerdict(7).ok).toBe(false);
   });
 });

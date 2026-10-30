@@ -59,3 +59,29 @@ export function summarise(values: readonly number[]): LatencySummary {
     mean: values.reduce((a, b) => a + b, 0) / values.length,
   };
 }
+
+export interface LiveSample { seq: number; rttMs: number }
+
+export interface LiveClassification {
+  /** Samples whose ping and echo both travelled the live socket: the only ones that may enter the RTT stats. */
+  live: LiveSample[];
+  /** Sequence numbers (ascending, unique) where any send fell back to HTTP. */
+  fellBack: number[];
+}
+
+/**
+ * sendLiveMessage falls back to HTTP silently, and a fallback waits out the library's 10 s ack timeout before
+ * it sends, so its timing is not a live latency. Any sample touched by a fallback is excluded.
+ */
+export function classifyLiveSamples(samples: readonly LiveSample[], fellBackSeqs: Iterable<number>): LiveClassification {
+  const fb = new Set(fellBackSeqs);
+  return {
+    live: samples.filter((s) => !fb.has(s.seq)),
+    fellBack: [...fb].sort((a, b) => a - b),
+  };
+}
+
+/** The live result is FAIL if any live send fell back (`count` includes sends that could not be attributed to a seq). */
+export function liveFallbackVerdict(count: number): { ok: boolean; reason?: string } {
+  return count === 0 ? { ok: true } : { ok: false, reason: `${count} live send(s) fell back to HTTP` };
+}
