@@ -6,6 +6,7 @@ import { LockingScript, Transaction, UnlockingScript } from '@bsv/sdk';
 import { LocalSigner, encodePushData } from 'runar-sdk';
 import { createBroadcaster } from '../src/broadcaster.js';
 import { FakeBroadcaster } from '../src/gate-a/fake-broadcaster.js';
+import { efSizeOf, lookupIn } from '../src/gate-a/txs.js';
 import { p2pkhScript, pkhOf, walletUtxos, type RunFile } from '../src/gate-a/store.js';
 
 const RATE = { satoshis: 1, bytes: 1000 };
@@ -95,5 +96,14 @@ describe('gate (a) run file: the wallet', () => {
     expect(walletUtxos(run, s)).toEqual([]); // built: funding:0 is committed, its change is not yet spendable
     (run.steps['referee-deploy'] as { state: string }).state = 'seen';
     expect(walletUtxos(run, s)).toEqual([{ txid: tx.id('hex'), outputIndex: 0, satoshis: 99_999, script: s }]);
+  });
+});
+
+describe('gate (a) sizes', () => {
+  it('efSizeOf equals the length of the EF the broadcaster is sent', async () => {
+    const { spend, funding } = await setup();
+    const tx = await spend({ fee: 1 });
+    const parsed = Transaction.fromHex(tx.toHex()); // as the harness holds it: inputs by txid, no source attached
+    expect(efSizeOf(parsed, lookupIn(new Map([[funding.id('hex'), funding]])))).toBe(tx.toHexEF().length / 2);
   });
 });

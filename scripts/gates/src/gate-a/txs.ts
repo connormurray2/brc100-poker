@@ -33,9 +33,12 @@ export const lookupIn = (txs: Map<string, Transaction>): SourceLookup => (txid, 
 
 const varIntLen = (n: number) => (n < 0xfd ? 1 : n <= 0xffff ? 3 : n <= 0xffffffff ? 5 : 9);
 
-/** EF size: the raw size plus, per input, the source output's satoshis and locking script (BRC-30). */
+/**
+ * EF size (BRC-30): the raw size, plus the 6-byte marker `0000000000EF` after the version, plus per
+ * input the source output's satoshis and locking script.
+ */
 export function efSizeOf(tx: Transaction, src: SourceLookup): number {
-  let n = tx.toBinary().length;
+  let n = tx.toBinary().length + 6;
   for (const i of tx.inputs) {
     const o = src(i.sourceTXID!, i.sourceOutputIndex);
     if (!o) throw new Error(`no source output for ${i.sourceTXID}:${i.sourceOutputIndex}`);
