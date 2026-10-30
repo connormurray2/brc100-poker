@@ -332,18 +332,17 @@ The README states this in these words.
 
 ## 9. Gated unknowns
 
-Each is a go/no-go gate in phase 1 (section 15). If one fails, the build stops and Connor decides. Three of the five gates have passed and are recorded as evidence in section 16 (c, d and e). Two have a harness ready and a run pending, so phase 1 is go/no-go only once both report. Results are in `docs/gates/`.
+Each is a go/no-go gate in phase 1 (section 15). If one fails, the build stops and Connor decides. Four of the five gates have passed and are recorded as evidence in section 16 (b, c, d and e). Gate a has a harness ready and a run pending, so phase 1 is go/no-go once it reports. Results are in `docs/gates/`.
 
 - **Mining multi-megabyte dispute transactions** (gate a: harness ready, run pending; `docs/gates/a-testnet-mining.md`).
   - Policy was read on 2026-10-29/30 (BSV Broadcaster, testnet and mainnet: 1 sat/kB, 100 MB for transactions and for scripts), but nothing that size has been mined.
   - The run needs a funded testnet key from Connor. Its dry run passes on 15 of 15 inputs.
   - It passes only if the equation-1 `prepare` and its `fraud` are read back as mined from BSV Broadcaster.
   - Its open question is the `prepare` unlocking script: 924,738 B, over a stock node's 500 KB script policy and under BSV Broadcaster's `/policy` limit (10.6).
-- **BSV Desktop's foreign-input buy-in flow** (gate b: harness ready, run pending; `docs/gates/b-bsv-desktop-buyin.md`).
-  - The run needs Connor and released BSV Desktop on testnet. It checks that the foreign input stays first and the pinned outputs stay in order (10.5).
 - **The fee rate.** On 2026-10-30, mainnet BSV Broadcaster `/policy` reported 1 sat/kB, and testnet reported the same. The toolkit's facts (verified 2026-10-22/23) record 100 sat/kB on every mainnet datahub, and 100 sat/kB as BSV Desktop's default.
   - The design reads `/policy` at table creation and sizes reserves from it with a margin (10.6).
   - Until gate (a) runs, 1 sat/kB is a stated assumption, and every fee figure in 10.6 and 13 is at that rate. Gate (a) records the rate its transactions actually paid, and the figures are replaced from it.
+  - Gate (b)'s buy-in, built and funded by BSV Desktop, paid about 252 sat/kB (103 sats on 408 bytes): wallet-funded transactions pay the wallet's rate, not `/policy`'s.
   - The conflict with the toolkit's 100 sat/kB is flagged for the toolkit to re-verify.
 
 ## 10. Money: the table escrow and the dispute referee
@@ -492,7 +491,7 @@ Six-max is longer (phase 2). Testnet constants shrink all of this to hours.
   2. The wallet shows the spend, and the player approves.
   3. The client collects every seat's escrow signature and completes with `signAction` (G-22).
 
-  Wallet-toolbox keeps caller inputs and outputs first; gate (b) checks BSV Desktop does too. The covenant checks the payer's balance against the continuation value minus the old value plus the fee, and every other seat's balance unchanged.
+  Wallet-toolbox keeps caller inputs and outputs first, and gate (b) showed BSV Desktop does too. The covenant checks the payer's balance against the continuation value minus the old value plus the fee, and every other seat's balance unchanged.
 - **`settle`.** Every seat signs `ALL|FORKID`.
   - A pinned prefix of outputs must carry the continuation, then payouts to leaving seats' registered payout scripts.
   - The check is a prefix compare (`left(serialisedOutputs, len(prefix)) === prefix`). No CompactSize walk is needed, because every pinned output has a known length.
@@ -636,8 +635,12 @@ Then build the protocol package, the contracts, the client, the lobby and the wa
 
 ### Gate results (`docs/gates/`, 2026-10-30)
 
-Gates c, d and e passed. Gate d and gate e run every transaction through `@bsv/sdk` `Spend` (MockProvider, every input validated), not through a node. Gates a and b are in section 9.
+Gates b, c, d and e passed. Gate d and gate e run every transaction through `@bsv/sdk` `Spend` (MockProvider, every input validated), not through a node; gate b ran on testnet. Gate a is in section 9.
 
+- **Gate b: BSV Desktop buy-in** (`docs/gates/b-bsv-desktop-buyin.md`). PASS.
+  - BSV Desktop (`wallet-brc100-1.0.0`, testnet) built the buy-in with the escrow as a foreign input at index 0, the 2,800-sat continuation and the 1-sat marker as outputs 0 and 1, and its change after them. The order was the same before and after signing.
+  - `signAction` returned the transaction that was signed, and BSV Broadcaster reported `SEEN_ON_NETWORK`, then `SEEN_MULTIPLE_NODES`, with no competitor (txid `0405af32…e8cb`).
+  - BSV Desktop accepted calls from an HTTPS origin (the page on Vercel), not only from `127.0.0.1`.
 - **Gate c: deal cost and MessageBox** (`docs/gates/c-deal-and-messagebox.md`). PASS.
   - Live round trip over MessageBox: median 122 ms, p95 139 ms, max 155 ms, 50 of 50 pings and echoes with none lost. The limit was a 2 s median.
   - No live send fell back to HTTP, and every quoted fee (`deliveryFee`, `recipientFee`) is 0, so MessageBox needs no reserve.
@@ -666,7 +669,7 @@ Gates c, d and e passed. Gate d and gate e run every transaction through `@bsv/s
 **Not exercised:**
 
 - a broadcast (gate a);
-- BSV Desktop signatures and its buy-in order (gate b);
+- BSV Desktop signatures in the referee's own methods (gate b covered P2PKH and the buy-in order only);
 - streets and showdown on chain;
 - the checker wiring against the real referee;
 - more seats.
