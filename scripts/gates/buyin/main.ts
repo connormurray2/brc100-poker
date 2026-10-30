@@ -12,14 +12,15 @@
 //
 // The test keys exist only in this page's memory. They are never persisted, logged or placed in a URL.
 import { P2PKH, PrivateKey, Transaction, WalletClient } from '@bsv/sdk';
-import { CONTINUATION_SATS, checkBuyIn, type Fact, type PinnedOutput } from './checks.js';
+import { CONTINUATION_SATS, checkBuyIn, inputOutpoint, isTerminal, networkFact, requireTestnet, sameSignedTx, type BroadcasterStatus, type Fact, type PinnedOutput } from './checks.js';
 
 const ORIGINATOR = 'gates.brc100-poker.local';
 const BROADCASTER = 'https://arcade-v2-testnet-us-1.bsvblockchain.tech';
 const ESCROW_SATS = 1000;
 const MARKER_SATS = 1;
-const STATUS_POLLS = 6;
+const STATUS_DEADLINE_MS = 60_000;
 const STATUS_POLL_MS = 2000;
+const STATUS_REQUEST_TIMEOUT_MS = 8000;
 
 // Fresh per page load. Not persisted anywhere.
 const testKey = PrivateKey.fromRandom();
@@ -60,21 +61,32 @@ function renderFacts(facts: Fact[]) {
   }
 }
 
-async function broadcasterStatus(txid: string): Promise<string> {
+/**
+ * Poll GET /tx/{txid} until a terminal answer or the deadline. 404 and UNKNOWN mean "not yet", and so do
+ * network errors (reported in `note` if nothing better arrives). Each request has its own timeout.
+ */
+async function pollBroadcaster(txid: string): Promise<{ status: BroadcasterStatus | undefined; note: string }> {
   const url = `${BROADCASTER}/tx/${txid}`;
-  let last = 'no response';
-  for (let i = 0; i < STATUS_POLLS; i++) {
+  const deadline = Date.now() + STATUS_DEADLINE_MS;
+  let status: BroadcasterStatus | undefined;
+  let note = 'no response';
+  for (;;) {
     try {
-      const res = await fetch(url);
+      const res = await fetch(url, { signal: AbortSignal.timeout(STATUS_REQUEST_TIMEOUT_MS) });
       const body = await res.text();
-      last = `HTTP ${res.status}: ${body}`;
-      if (res.ok && /SEEN_ON_NETWORK|MINED/.test(body)) return last;
+      note = `HTTP ${res.status}: ${body}`;
+      if (res.ok) {
+        try { status = JSON.parse(body) as BroadcasterStatus; } catch { status = undefined; }
+        if (isTerminal(status)) break;
+      }
     } catch (e) {
-      last = `fetch failed (${(e as Error).message}); check by hand: curl ${url}`;
+      note = `fetch failed (${(e as Error).message}); check by hand: curl ${url}`;
     }
-    if (i < STATUS_POLLS - 1) await sleep(STATUS_POLL_MS);
+    if (Date.now() + STATUS_POLL_MS > deadline) break;
+    $('status').textContent = `${url}\nwaiting: ${note}`;
+    await sleep(STATUS_POLL_MS);
   }
-  return last;
+  return { status, note };
 }
 
 async function run() {
@@ -91,9 +103,7 @@ async function run() {
   try {
     // 1. Network guard (G-02).
     const { network } = await wallet.getNetwork();
-    if (network !== 'testnet') {
-      throw new Error(`Refusing to run: the wallet reports network "${network}". This gate is testnet only. Switch BSV Desktop to testnet and reload.`);
-    }
+    requireTestnet(network);
     let version = 'unknown';
     try { version = (await wallet.getVersion()).version; } catch { /* informational only */ }
     finish(current, `Wallet is on testnet (reported version: ${version})`);
@@ -138,7 +148,7 @@ async function run() {
     // so the run still completes and the facts below report the move.
     current = step('Signing the foreign input locally');
     const wipChecks = checkBuyIn(wip, { foreign, pinned });
-    const signAt = wip.inputs.findIndex((i) => (i.sourceTXID ?? i.sourceTransaction?.id('hex')) === foreign.txid && i.sourceOutputIndex === foreign.vout);
+    const signAt = wip.inputs.findIndex((_, i) => { const o = inputOutpoint(wip, i); return o?.txid === foreign.txid && o.vout === foreign.vout; });
     if (signAt < 0) throw new Error('The foreign input is not in the wallet\'s transaction at all.');
     const unlockingScript = (await unlocker.sign(wip, signAt)).toHex();
     finish(current, `Signed input ${signAt} (SIGHASH_ALL|FORKID, ${unlockingScript.length / 2} bytes)`);
@@ -151,26 +161,31 @@ async function run() {
     finish(current, `Completed: txid ${done.txid}`);
 
     const finalTx = done.tx ? Transaction.fromAtomicBEEF(done.tx) : undefined;
-    const facts = checkBuyIn(finalTx ?? wip, { foreign, pinned });
-    if (!finalTx) facts.unshift({ fact: 'final transaction returned by signAction', pass: false, detail: 'signAction returned no tx; the facts below are for the unsigned transaction the wallet built' });
+    const ordering = checkBuyIn(finalTx ?? wip, { foreign, pinned });
+    const same = sameSignedTx(wip, finalTx);
+    renderFacts([...ordering, same]);
+
+    $('status').style.whiteSpace = 'pre-wrap';
+    $('status').textContent = `${BROADCASTER}/tx/${done.txid}\nasking BSV Broadcaster (up to ${STATUS_DEADLINE_MS / 1000} s)...`;
+    const { status, note } = await pollBroadcaster(done.txid);
+    $('status').textContent = `${BROADCASTER}/tx/${done.txid}\n${note}`;
+    const networkResult = networkFact(status);
+    const facts = [...ordering, same, networkResult];
     renderFacts(facts);
 
-    $('status').textContent = 'Asking BSV Broadcaster...';
-    const status = await broadcasterStatus(done.txid);
-    $('status').textContent = `${BROADCASTER}/tx/${done.txid}\n${status}`;
-    $('status').style.whiteSpace = 'pre-wrap';
-
+    // PASS only if every fact passes: ordering, the signed transaction is the returned one, and the network has it.
     const allPass = facts.every((f) => f.pass);
     $('report').textContent = [
       `Date: ${new Date().toISOString()}`,
       `BSV Desktop (wallet-reported version): ${version}`,
-      `Escrow txid: ${foreign.txid}:${foreign.vout}`,
+      `Escrow txid:vout: ${foreign.txid}:${foreign.vout}`,
       `Buy-in txid: ${done.txid}`,
       `Input count / output count (final): ${finalTx ? `${finalTx.inputs.length} / ${finalTx.outputs.length}` : 'n/a'}`,
-      `Order as the wallet first built it: ${wipChecks.every((f) => f.pass) ? 'all facts pass' : wipChecks.filter((f) => !f.pass).map((f) => f.fact).join('; ') + ' FAIL'}`,
+      `Order as the wallet first built it: ${wipChecks.every((f) => f.pass) ? 'all facts pass' : `${wipChecks.filter((f) => !f.pass).map((f) => f.fact).join('; ')} FAIL`}`,
       ...facts.map((f) => `${f.pass ? 'PASS' : 'FAIL'}  ${f.fact}: ${f.detail}`),
-      `Broadcaster: ${status}`,
-      `Verdict: ${allPass ? 'PASS' : 'FAIL (ordering not preserved: see spec 10.5 fallback)'}`,
+      `Broadcaster: ${note}`,
+      'Who broadcast it (BSV Desktop itself, and through what): not visible to this page; note it by hand.',
+      `Verdict: ${allPass ? 'PASS' : 'FAIL (see the FAIL lines; an ordering failure means the spec 10.5 fallback is needed)'}`,
     ].join('\n');
   } catch (e) {
     failStep(current, `${current.textContent} - failed`);

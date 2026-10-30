@@ -29,8 +29,10 @@ wallet for exactly that transaction and reports whether the order survived.
    - the 1,000-sat test escrow (an ordinary payment to the page's test address);
    - the buy-in: spends that escrow plus some of your coins, and pays a 2,800-sat continuation and a 1-sat marker.
 6. Wait for the **Facts** list and the **Broadcaster status** line (it polls `GET /tx/{txid}` on
-   `https://arcade-v2-testnet-us-1.bsvblockchain.tech` for up to about 10 s). If the browser cannot reach the broadcaster,
-   run the `curl` the page prints.
+   `https://arcade-v2-testnet-us-1.bsvblockchain.tech` for up to about 60 s, treating 404 and `UNKNOWN` as "not yet").
+   If the browser cannot reach the broadcaster, run the `curl` the page prints.
+   The page cannot see who broadcast the transaction. Note whether BSV Desktop did it itself, and through what
+   (its settings or logs), or check the broadcaster for the txid.
 7. Copy the block under "Copy into docs/gates/b-bsv-desktop-buyin.md" into the results below.
 
 If the wallet reports a network other than testnet, the page refuses and shows an error. Nothing is sent.
@@ -43,7 +45,9 @@ If the wallet reports a network other than testnet, the page refuses and shows a
 | BSV Desktop version | |
 | Escrow txid:vout | |
 | Buy-in txid | |
-| Broadcaster status of the buy-in txid | |
+| Broadcaster status of the buy-in txid (SEEN_ON_NETWORK or MINED, no competing txs) | |
+| Signed transaction is the one `signAction` returned | |
+| BSV Desktop broadcast it itself, and through what (note by hand: the page cannot see this; or check the broadcaster for the txid) | |
 | Foreign input is at index 0 | |
 | Pinned outputs first and in order (continuation, then marker) | |
 | Extra outputs, listed (change is expected after the prefix) | |
@@ -52,7 +56,8 @@ If the wallet reports a network other than testnet, the page refuses and shows a
 
 ## Decision rule
 
-- **All four facts PASS** and the broadcaster shows `SEEN_ON_NETWORK` (or later): gate (b) passes. The
+- **Every fact PASSES** (the four ordering facts, the signed transaction equal to the returned one, and the broadcaster at
+  `SEEN_ON_NETWORK` or `MINED` with no competing transactions): gate (b) passes. The
   pinned-prefix rule in 10.5 stands as written. Record the version, txid and facts above and change the
   status to **PASS**.
 - **Extra outputs after the pinned prefix** (change, a wallet commission) are fine: the covenant ignores
@@ -63,6 +68,9 @@ If the wallet reports a network other than testnet, the page refuses and shows a
   10.5 as written states the assumption but does not spell out the fallback, so naming it is part of acting on a FAIL.
 - **The continuation amount is not 2,800** with the order intact: the wallet changed an output. Record it and treat it
   as a FAIL for the same reason.
+- **Ordering passes but the signed-transaction or network fact fails**: the page's verdict is FAIL. An altered
+  transaction means the signature did not cover what was broadcast. A network failure may only be slow
+  propagation: check the txid on the broadcaster by hand and rerun once before concluding anything.
 - **The run itself fails** (wallet error, `signAction` rejected, transaction not broadcast): that is not a pass
   or a fail on ordering. Record the error text, and rerun once before concluding anything.
 

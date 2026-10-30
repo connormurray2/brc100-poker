@@ -6,7 +6,10 @@
 // transaction the wallet built and say, fact by fact, whether it did.
 import type { Transaction } from '@bsv/sdk';
 
-/** The continuation output carries the escrow value plus the buy-in: 1,000 + 2,000 - 200 fee allowance. */
+/**
+ * The continuation's amount. The page's buy-in spends the 1,000-sat escrow plus coins the wallet chooses,
+ * pays this continuation and a 1-sat marker, and leaves the rest to fees and change.
+ */
 export const CONTINUATION_SATS = 2800;
 
 export interface Outpoint { txid: string; vout: number }
@@ -18,8 +21,17 @@ export const FACT_FOREIGN_FIRST = 'foreign input is at index 0';
 export const FACT_PINNED_PREFIX = 'pinned outputs are first and in order';
 export const FACT_EXTRAS = 'extra outputs are all after the pinned prefix';
 export const FACT_CONTINUATION = `continuation carries ${CONTINUATION_SATS} sats`;
+export const FACT_SAME_TX = 'the transaction signAction returned is the one that was signed';
+export const FACT_NETWORK = 'BSV Broadcaster has seen the transaction, with no competitor';
 
-function inputOutpoint(tx: Transaction, i: number): Outpoint | undefined {
+/** Refuse anything but testnet (G-02). Throws with a message fit to show the person. */
+export function requireTestnet(network: string): void {
+  if (network !== 'testnet') {
+    throw new Error(`Refusing to run: the wallet reports network "${network}". This gate is testnet only. Switch BSV Desktop to testnet and reload.`);
+  }
+}
+
+export function inputOutpoint(tx: Transaction, i: number): Outpoint | undefined {
   const input = tx.inputs[i];
   if (!input) return undefined;
   const txid = input.sourceTXID ?? input.sourceTransaction?.id('hex');
@@ -62,18 +74,22 @@ export function checkBuyIn(tx: Transaction, expected: Expected): Fact[] {
     detail: mismatches.length === 0 ? `outputs 0..${expected.pinned.length - 1} are ${expected.pinned.map((p) => p.name).join(', ')}` : mismatches.join('; '),
   };
 
-  // 3. Extra outputs: anything that is not one of the pinned scripts. The covenant ignores trailing
-  // extras (wallet change, a commission) but a pinned prefix needs them after, never between.
-  const extras = outs.filter((o) => nameOf(o.script) === undefined);
-  const misplaced = extras.filter((o) => o.index < expected.pinned.length);
-  const listing = extras.map((o) => `#${o.index} ${sats(o.satoshis)} to ${short(o.script)}`).join('; ');
+  // 3. Extra outputs. The covenant ignores trailing outputs (wallet change, a commission), so every output
+  // beyond the pinned prefix is listed as an extra, even one that repeats a pinned script. What fails is an
+  // output with an unpinned script sitting inside the prefix: pinned outputs must come first.
+  const extras = outs.filter((o) => o.index >= expected.pinned.length);
+  const misplaced = outs.filter((o) => o.index < expected.pinned.length && nameOf(o.script) === undefined);
+  const list = (os: typeof outs) => os.map((o) => `#${o.index} ${sats(o.satoshis)} to ${short(o.script)}`).join('; ');
   const extrasFact: Fact = {
     fact: FACT_EXTRAS,
     pass: misplaced.length === 0,
     detail:
-      extras.length === 0
+      extras.length === 0 && misplaced.length === 0
         ? 'none (no change output)'
-        : `${extras.length} extra: ${listing}${misplaced.length ? `; inside the pinned prefix: ${misplaced.map((o) => `#${o.index}`).join(', ')}` : ''}`,
+        : [
+            extras.length ? `${extras.length} after the prefix: ${list(extras)}` : '',
+            misplaced.length ? `inside the pinned prefix: ${list(misplaced)}` : '',
+          ].filter(Boolean).join('; '),
   };
 
   // 4. The continuation's amount, wherever the wallet put it.
@@ -90,4 +106,59 @@ export function checkBuyIn(tx: Transaction, expected: Expected): Fact[] {
   };
 
   return [foreignFact, prefixFact, extrasFact, contFact];
+}
+
+/**
+ * The transaction the wallet built and we signed over must be the one signAction returns: same version,
+ * lock time, input outpoints and sequences, and output scripts and amounts. (Unlocking scripts are not
+ * compared: ours is filled in by signAction.) A difference means our signature does not cover what was
+ * broadcast.
+ */
+export function sameSignedTx(signed: Transaction, final: Transaction | undefined): Fact {
+  if (!final) return { fact: FACT_SAME_TX, pass: false, detail: 'signAction returned no transaction, so it cannot be compared' };
+  const diffs: string[] = [];
+  if (signed.version !== final.version) diffs.push(`version ${signed.version} -> ${final.version}`);
+  if (signed.lockTime !== final.lockTime) diffs.push(`lock time ${signed.lockTime} -> ${final.lockTime}`);
+  if (signed.inputs.length !== final.inputs.length) diffs.push(`${signed.inputs.length} inputs -> ${final.inputs.length}`);
+  else {
+    signed.inputs.forEach((_, i) => {
+      const a = inputOutpoint(signed, i);
+      const b = inputOutpoint(final, i);
+      if (!a || !b || a.txid !== b.txid || a.vout !== b.vout) diffs.push(`input ${i} outpoint ${a ? `${short(a.txid)}:${a.vout}` : '?'} -> ${b ? `${short(b.txid)}:${b.vout}` : '?'}`);
+      if (signed.inputs[i]!.sequence !== final.inputs[i]!.sequence) diffs.push(`input ${i} sequence ${signed.inputs[i]!.sequence} -> ${final.inputs[i]!.sequence}`);
+    });
+  }
+  if (signed.outputs.length !== final.outputs.length) diffs.push(`${signed.outputs.length} outputs -> ${final.outputs.length}`);
+  else {
+    signed.outputs.forEach((o, i) => {
+      const f = final.outputs[i]!;
+      if (o.lockingScript.toHex() !== f.lockingScript.toHex()) diffs.push(`output ${i} script changed`);
+      if (o.satoshis !== f.satoshis) diffs.push(`output ${i} amount ${o.satoshis} -> ${f.satoshis}`);
+    });
+  }
+  return {
+    fact: FACT_SAME_TX,
+    pass: diffs.length === 0,
+    detail: diffs.length === 0 ? `${final.inputs.length} inputs and ${final.outputs.length} outputs are unchanged between the signed and returned transaction` : diffs.join('; '),
+  };
+}
+
+/** What `GET /tx/{txid}` returns that matters here (BSV Broadcaster / Arcade). */
+export interface BroadcasterStatus { txStatus?: string; competingTxs?: string[] }
+
+/** Statuses after which polling can stop. Anything else (404, UNKNOWN, QUEUED, ...) means "not yet". */
+export const TERMINAL_STATUSES = ['SEEN_ON_NETWORK', 'MINED', 'REJECTED', 'DOUBLE_SPEND_ATTEMPTED'];
+export const isTerminal = (status: BroadcasterStatus | undefined) => status?.txStatus !== undefined && TERMINAL_STATUSES.includes(status.txStatus);
+
+/** Passes only at SEEN_ON_NETWORK or MINED with no competing transaction (G-09, G-10). */
+export function networkFact(status: BroadcasterStatus | undefined): Fact {
+  if (!status || status.txStatus === undefined) {
+    return { fact: FACT_NETWORK, pass: false, detail: 'no status from BSV Broadcaster (the transaction was not found, or the request failed)' };
+  }
+  const competing = status.competingTxs ?? [];
+  const seen = status.txStatus === 'SEEN_ON_NETWORK' || status.txStatus === 'MINED';
+  const parts = [`status ${status.txStatus}`];
+  if (competing.length) parts.push(`competing transactions: ${competing.join(', ')}`);
+  else if (seen) parts.push('no competing transactions');
+  return { fact: FACT_NETWORK, pass: seen && competing.length === 0, detail: parts.join('; ') };
 }

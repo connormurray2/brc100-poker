@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { PrivateKey, P2PKH, Transaction, Script, type TransactionInput } from '@bsv/sdk';
-import { CONTINUATION_SATS, checkBuyIn, type PinnedOutput } from '../buyin/checks.js';
+import { CONTINUATION_SATS, checkBuyIn, inputOutpoint, isTerminal, networkFact, requireTestnet, sameSignedTx, type PinnedOutput } from '../buyin/checks.js';
 
 const lock = (k: PrivateKey): Script => new P2PKH().lock(k.toPublicKey().toAddress('testnet'));
 const keys = { cont: PrivateKey.fromRandom(), marker: PrivateKey.fromRandom(), change: PrivateKey.fromRandom() };
@@ -102,6 +102,13 @@ describe('checkBuyIn', () => {
     expect(f.detail).toMatch(/not (found|present)/i);
   });
 
+  it('lists an output after the prefix as extra even when it repeats a pinned script', () => {
+    const r = run(build([inp(FOREIGN.txid)], [out.cont(), out.marker(), out.marker()]));
+    const f = byFact(r, 'extra outputs are all after the pinned prefix');
+    expect(f.pass).toBe(true);
+    expect(f.detail).toMatch(/1 after the prefix: #2/);
+  });
+
   it('reads the input outpoint from sourceTransaction when sourceTXID is unset', () => {
     // A parent with a (blank) unlocking script so it can be serialised and hashed.
     const parent = build([{ ...inp(OTHER_TXID), unlockingScript: new Script() }], [out.cont(1000)]);
@@ -111,5 +118,92 @@ describe('checkBuyIn', () => {
     tx.addOutput(out.marker());
     const r = checkBuyIn(tx, { foreign: { txid: parent.id('hex'), vout: 0 }, pinned });
     expect(byFact(r, 'foreign input is at index 0').pass).toBe(true);
+  });
+});
+
+describe('inputOutpoint', () => {
+  it('returns undefined past the last input', () => {
+    expect(inputOutpoint(build([inp(FOREIGN.txid)], [out.cont()]), 1)).toBeUndefined();
+  });
+});
+
+describe('sameSignedTx', () => {
+  const mk = () => build([inp(FOREIGN.txid), inp(OTHER_TXID)], [out.cont(), out.marker(), out.change()]);
+
+  it('passes for identical transactions, ignoring unlocking scripts', () => {
+    const signed = mk();
+    const final = mk();
+    final.inputs[0]!.unlockingScript = new Script();
+    expect(sameSignedTx(signed, final).pass).toBe(true);
+  });
+
+  it('fails when an output amount is altered', () => {
+    const final = mk();
+    final.outputs[2]!.satoshis = 100;
+    const f = sameSignedTx(mk(), final);
+    expect(f.pass).toBe(false);
+    expect(f.detail).toMatch(/output 2 amount 190 -> 100/);
+  });
+
+  it('fails when an output script is altered', () => {
+    const final = mk();
+    final.outputs[1]!.lockingScript = lock(PrivateKey.fromRandom());
+    expect(sameSignedTx(mk(), final).detail).toMatch(/output 1 script changed/);
+  });
+
+  it('fails when an input sequence is altered', () => {
+    const final = mk();
+    final.inputs[1]!.sequence = 0;
+    const f = sameSignedTx(mk(), final);
+    expect(f.pass).toBe(false);
+    expect(f.detail).toMatch(/input 1 sequence 4294967295 -> 0/);
+  });
+
+  it('fails on an altered input outpoint, version, lock time or output count', () => {
+    const a = mk(); a.inputs[0]!.sourceOutputIndex = 3;
+    expect(sameSignedTx(mk(), a).detail).toMatch(/input 0 outpoint/);
+    const b = mk(); b.version = 2;
+    expect(sameSignedTx(mk(), b).detail).toMatch(/version 1 -> 2/);
+    const c = mk(); c.lockTime = 500;
+    expect(sameSignedTx(mk(), c).detail).toMatch(/lock time 0 -> 500/);
+    const d = mk(); d.outputs.pop();
+    expect(sameSignedTx(mk(), d).detail).toMatch(/3 outputs -> 2/);
+  });
+
+  it('fails when signAction returned no transaction', () => {
+    expect(sameSignedTx(mk(), undefined).pass).toBe(false);
+  });
+});
+
+describe('networkFact', () => {
+  it('passes a clean SEEN_ON_NETWORK and a clean MINED', () => {
+    expect(networkFact({ txStatus: 'SEEN_ON_NETWORK' }).pass).toBe(true);
+    expect(networkFact({ txStatus: 'MINED', competingTxs: [] }).pass).toBe(true);
+  });
+  it('fails SEEN_ON_NETWORK with competing transactions and names them', () => {
+    const f = networkFact({ txStatus: 'SEEN_ON_NETWORK', competingTxs: ['cc'.repeat(32)] });
+    expect(f.pass).toBe(false);
+    expect(f.detail).toContain('cc'.repeat(32));
+  });
+  it.each(['REJECTED', 'DOUBLE_SPEND_ATTEMPTED', 'UNKNOWN', 'ANNOUNCED_TO_NETWORK'])('fails %s', (txStatus) => {
+    expect(networkFact({ txStatus }).pass).toBe(false);
+  });
+  it('fails when there is no status at all', () => {
+    expect(networkFact(undefined).pass).toBe(false);
+    expect(networkFact({}).pass).toBe(false);
+  });
+  it('treats only final answers as terminal, so 404 and UNKNOWN keep polling', () => {
+    expect(isTerminal(undefined)).toBe(false);
+    expect(isTerminal({ txStatus: 'UNKNOWN' })).toBe(false);
+    expect(isTerminal({ txStatus: 'ANNOUNCED_TO_NETWORK' })).toBe(false);
+    for (const s of ['SEEN_ON_NETWORK', 'MINED', 'REJECTED', 'DOUBLE_SPEND_ATTEMPTED']) expect(isTerminal({ txStatus: s })).toBe(true);
+  });
+});
+
+describe('requireTestnet', () => {
+  it('accepts testnet', () => { expect(() => requireTestnet('testnet')).not.toThrow(); });
+  it('refuses mainnet and anything else with a visible message', () => {
+    expect(() => requireTestnet('mainnet')).toThrow(/testnet only/);
+    expect(() => requireTestnet('')).toThrow(/Refusing/);
   });
 });
