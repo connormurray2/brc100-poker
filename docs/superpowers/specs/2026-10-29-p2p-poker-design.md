@@ -332,18 +332,19 @@ The README states this in these words.
 
 ## 9. Gated unknowns
 
-Each is a go/no-go gate in phase 1 (section 15). If one fails, the build stops and Connor decides.
+Each is a go/no-go gate in phase 1 (section 15). If one fails, the build stops and Connor decides. Three of the five gates have passed and are recorded as evidence in section 16 (c, d and e). Two have a harness ready and a run pending, so phase 1 is go/no-go only once both report. Results are in `docs/gates/`.
 
-- **The on-chain evaluator.**
-  - Its size is fine: 11 KB of script (spike).
-  - icellan/runar#175 is fixed by Connor's PR icellan/runar#177, pending merge.
-  - **icellan/runar#178 still breaks the evaluator's kicker logic.** We fix it upstream in all seven tiers (gate e).
-- **The checker wiring** (10.7) and the real size of a full prepare-plus-fraud pair.
-- **Mining multi-megabyte dispute transactions.** Policy was read on 2026-10-29/30 (BSV Broadcaster, testnet and mainnet: 1 sat/kB, 100 MB scripts), but nothing that size has been mined.
-- **BSV Desktop's foreign-input buy-in flow** (10.5).
-- **The fee rate.** On 2026-10-30, mainnet BSV Broadcaster `/policy` reported 1 sat/kB. The toolkit's facts (verified 2026-10-22/23) record 100 sat/kB on every mainnet datahub, and 100 sat/kB as BSV Desktop's default.
+- **Mining multi-megabyte dispute transactions** (gate a: harness ready, run pending; `docs/gates/a-testnet-mining.md`).
+  - Policy was read on 2026-10-29/30 (BSV Broadcaster, testnet and mainnet: 1 sat/kB, 100 MB for transactions and for scripts), but nothing that size has been mined.
+  - The run needs a funded testnet key from Connor. Its dry run passes on 15 of 15 inputs.
+  - It passes only if the equation-1 `prepare` and its `fraud` are read back as mined from BSV Broadcaster.
+  - Its open question is the `prepare` unlocking script: 924,738 B, over a stock node's 500 KB script policy and under BSV Broadcaster's `/policy` limit (10.6).
+- **BSV Desktop's foreign-input buy-in flow** (gate b: harness ready, run pending; `docs/gates/b-bsv-desktop-buyin.md`).
+  - The run needs Connor and released BSV Desktop on testnet. It checks that the foreign input stays first and the pinned outputs stay in order (10.5).
+- **The fee rate.** On 2026-10-30, mainnet BSV Broadcaster `/policy` reported 1 sat/kB, and testnet reported the same. The toolkit's facts (verified 2026-10-22/23) record 100 sat/kB on every mainnet datahub, and 100 sat/kB as BSV Desktop's default.
   - The design reads `/policy` at table creation and sizes reserves from it with a margin (10.6).
-  - The conflict is flagged for the toolkit to re-verify.
+  - Until gate (a) runs, 1 sat/kB is a stated assumption, and every fee figure in 10.6 and 13 is at that rate. Gate (a) records the rate its transactions actually paid, and the figures are replaced from it.
+  - The conflict with the toolkit's 100 sat/kB is flagged for the toolkit to re-verify.
 
 ## 10. Money: the table escrow and the dispute referee
 
@@ -430,9 +431,11 @@ Posting migrates the escrow into the dispute referee. The deadline is `nLockTime
 
 **Format checks at record time.** All recorded proof data must be well formed, or the referee refuses it, so checkers only ever run on valid input:
 
-- every point 33 bytes, compressed, with prefix 02 or 03, x below p, on curve;
-- every scalar in `[1, n)`;
-- every permutation a permutation.
+- every point 33 bytes, compressed, with prefix 02 or 03, x below p, canonical, and on the curve (gate d: an off-curve base fails `EcMulCheck`, and a non-canonical coordinate fails `ecAdd`, so either escapes conviction unless refused here);
+- every scalar in `[1, n)` (gate d): a `z` of 0 makes a checker that nobody can spend, so a cheater could never be convicted;
+- every permutation a permutation;
+- **every width, by hand** (found by gate d). Rúnar does not enforce the width of a `Point` or of a fixed-width `ByteString` argument at run time, and it parses state from the end, at fixed offsets. So every recorded value and every method argument that has a fixed width is length-checked in the contract. Without it, an over-wide point in `prepare` made the checker pass for any product and let the attacker steer where the referee read its own state, and an **honest** proof was convicted. The same check covers the referee's own state fields (`refundPKH`, the claimed products);
+- **the initial state, by the contract that sets it** (gate d: its deployer set the recorded values, and a real referee cannot trust them). Whoever builds the transaction that creates the referee sets its first state, so the referee's first method checks it: phase 0, no products, every field the right width. A deployer-set value is not trusted.
 
 **The fixed fine:** `ceil(hand-start balance of the stalling seat / 15)` plus the dispute fees.
 
@@ -444,9 +447,17 @@ Posting migrates the escrow into the dispute referee. The deadline is `nLockTime
 **`prepare` is caller-funded and bonded.**
 
 - The caller supplies an external fee input and posts a bond.
-- A successful `fraud` returns the bond and reimburses the caller from the cheater's balance.
-- A checker that lapses unspent forfeits the bond.
-- `prepare` may only target the most recently recorded move, once per move.
+- A successful `fraud` returns the bond to the preparer's registered key, and nobody else can take it. It also reimburses the caller from the cheater's balance.
+- `prepare` may only target the most recently recorded move.
+- **A lapse path (required; found by gate d).** A one-shot `prepare` lets a cheater block their own conviction for the price of one bond. They call `prepare` first, on the true equation or with a false product, or anyone spends one of the anyone-can-spend checkers alone. Either leaves the referee in phase 1 for good. Broadcasting `prepare` and `fraud` as a pair (10.7) stops an outsider racing an honest disputer, but not a cheater who prepares first. So:
+  - the referee has a phase-1 timeout: once the fraud window after a `prepare` lapses, anyone may reset the referee to phase 0 and `prepare` again;
+  - a lapsed `prepare` forfeits its bond to the other seats, so each attempt to block a conviction costs the blocker one bond per window;
+  - the timeout's length is set against the freeze bound (10.4), and its schedule is for the referee's own plan.
+
+**The evaluator at showdown** (found by gate e).
+- `payout()` runs `Eval7`, which asserts only that each card index is in `0..51`. It does not reject a repeated card: a hand holding the same card twice scores as if it were legal.
+- So the referee proves the seven cards occupy distinct deck positions before it calls the evaluator, and a hand whose cards are not distinct goes to `cancel()` instead.
+- `Eval7` takes exactly seven cards. A showdown with fewer needs its own entry point or defined padding rules.
 
 **Referee state size.** Each recorded move's proof data stays in state until its fraud window closes, so the state grows to about 15–20 KB heads-up by showdown. That is priced in 10.6.
 
@@ -500,25 +511,35 @@ Six-max is longer (phase 2). Testnet constants shrink all of this to hours.
 
 ### 10.6 Fees and reserves
 
-- **Rate.** The table reads `/policy` when the room is created and fixes it in the terms. Every escrow-funded fee is pinned at four times that rate.
-- **Reserve.** Each seat's buy-in includes a dispute reserve inside the escrow, sized to cover the largest dispute at that rate: about 3.5 MB of transactions for one fraud proof, plus a full on-chain hand. At 1 sat/kB that is about 10,000 sats; at 100 sat/kB about 1,000,000.
+- **Rate.** The table reads `/policy` when the room is created and fixes it in the terms. Every escrow-funded fee is pinned at four times that rate. **Until gate (a) runs, the rate is the assumed 1 sat/kB (section 9), and every sat figure below is at that rate and scales linearly with it.** The figures are replaced from the rate gate (a) records.
+- **Reserve.** Each seat's buy-in includes a dispute reserve inside the escrow, sized to cover the largest dispute at that rate: one fraud proof, plus a full on-chain hand.
+  - **The fraud proof, measured** (gate d, `docs/gates/d-checker-wiring.md`; gate a's dry run is 11 B longer for its longer domain string). A lie needs one false equation, so `prepare` creates two checkers, not four:
+
+    | Pair (`prepare` + `fraud`), gate referee | Bytes |
+    | --- | --- |
+    | Equation 1 (needs both templates) | 1,921,675 |
+    | Equation 2 (one template) | 1,496,287 |
+
+    That is 55% and 43% of the 3.5 MB this section first estimated.
+  - **The real referee is bigger.** Each spend carries the referee's script three times (the code-part push, the scriptCode inside the preimage push, the continuation). The gate referee's script is 35,631 B; the real one is about 200 KB. Each of `prepare` and `fraud` then grows by about 0.5 MB, and one fraud proof comes to about **2.9 MB** (equation 1) or 2.5 MB (equation 2), still under 3.5 MB. The reserve is sized from the 2.9 MB until the real referee is measured in its own plan.
+  - **In sats.** About 2,900 sats at 1 sat/kB for the projected 2.9 MB, and about 290,000 at 100 sat/kB. Gate (a)'s dry run priced the gate pair at 2,848 sats at 1 sat/kB, on the larger EF encoding the broadcaster receives. The network itself prices raw bytes, so this overpays.
+  - **The hand.** A full on-chain hand is not measured by the gates, so the working totals stay at about 10,000 sats at 1 sat/kB and about 1,000,000 at 100 sat/kB. They carry the projected fraud proof and leave the rest for the hand and the margin.
 - **Who pays.** At resolution, a seat that forfeits or is proven to cheat pays every dispute fee from its balance. A dispute that ends with every move made splits its fees equally, which also covers fee griefing.
-- **Checker size.** Checkers are split so no single script exceeds what gate (a) shows is mined.
-  - A one-`ecMul` step is at least 428,676 B before checks and hashing. Whether it stays under the stock 500 KB policy must be measured.
-- **Template bytes.** `prepare` must produce each checker's exact locking script, so the caller supplies each template in the unlocking script and the referee splices the statement in.
-  - A four-step `prepare` therefore carries about 1.75 MB of templates plus about 1.75 MB of outputs: about 3.5 MB.
-  - Likewise a `post` carries the referee's full script, with its evaluator, as its continuation: about 200 KB, not the spike's 13 KB.
-  - Gate (a) measures all of these, and the reserve is re-sized from the measurements.
+- **Checker size.** Measured: an `EcMulCheck` locking script is 427,300 B and an `EcMulGenCheck` 426,427 B as deployed, each under the stock 500 KB per-script policy (72,700 B and 73,573 B of headroom).
+- **Unlocking-script size and the script policy** (found by gate d). `prepare` must produce each checker's exact locking script, so the caller supplies each template in the unlocking script and the referee splices the statement in.
+  - Equation 1 needs two templates, so its input-0 unlocking script is **924,738 B** (whole transaction 1,814,363 B): over a stock node's 500 KB `maxscriptsizepolicy`, and under the 100 MB BSV Broadcaster `/policy` reports. Equation 2 needs one template and sits 1,526 B under 500 KB (498,474 B). `fraud` is 107,312 B.
+  - Gate (a) decides whether the 925 KB script is relayed and mined. If it is, the design stands. If it is refused, the referee must keep every unlocking script under 500 KB: one checker per `prepare` step (two steps, one template each), and a referee script small enough to fit beside a template, since the referee's own script is carried in every spend.
+  - A `post` carries the referee's full script, with its evaluator, as its continuation: about 200 KB, not the spike's 13 KB.
 
 ### 10.7 Checker wiring
 
 - **The checkers.** Constant-script, stateless Rúnar contracts, each created by the dispute referee as output 1 of a `prepare` transaction, with its statement baked into the locking script.
 - **The binding.** The referee's `fraud` requires input 1 to be `(own previous txid, 1)`, via `extractOutpoint` and `extractHashPrevouts`. That binding is verified feasible against Rúnar's companion-verifier pattern.
-- **Broadcast as a pair.** `prepare` and `fraud` are always broadcast together, so the checker output cannot be raced. A `prepare` whose checker is never spent leaves the referee unchanged.
+- **Broadcast as a pair.** `prepare` and `fraud` are always broadcast together, so an outsider cannot race the checker output. A `prepare` whose checker is never spent leaves the referee in phase 1 until the phase-1 timeout resets it (10.3).
 
 | Checker | Script | Cost |
 | --- | --- | --- |
-| Chaum–Pedersen inequality | split into one-`ecMul` steps, intermediates checked with `ecOnCurve` and `z ≢ 0` | about 3.5 MB in total |
+| Chaum–Pedersen inequality | two one-`ecMul` checkers for the false equation, products checked with `ecOnCurve`, `z` in `[1, n)` | 1.92 MB (equation 1) or 1.50 MB (equation 2) measured with the gate referee; about 2.9 MB projected with the real one (10.6) |
 | Opening element `kᶜ·D[πᶜ⁻¹(j)] ≠ Oᶜ[j]` | one `ecMul` | about 0.9 MB with its template, split if gate (a) requires |
 
 ## 11. Conduct rules
@@ -551,9 +572,9 @@ Written for mainnet.
 4. **Folded hands stay private** (7.5). An uncaught cheat can learn your hole cards in a folded hand.
 5. **Collusion and Sybils.** Identities are free, so penalties are economic.
 6. **The relay, lobby and watcher** can delay messages, hide rooms or post late. They cannot change outcomes or see cards.
-7. **New code on chain.** The escrow, referee, checkers and evaluator need cold review before mainnet (G-30). Rúnar rc.1 has had silent miscompiles (icellan/runar#175, #178), so every contract is tested differentially through real `Spend`.
-8. **Fees.** Disputes cost about 10,000 sats at 1 sat/kB and about 1,000,000 at 100 sat/kB. Reserves are sized at table creation. A fee rise beyond the 4× margin leaves the timeout refund as the exit.
-9. **Script policy.** Checker steps are about 0.45 MB each, accepted by BSV Broadcaster today. Gate (a) must see the full set mined.
+7. **New code on chain.** The escrow, referee, checkers and evaluator need cold review before mainnet (G-30). Rúnar rc.1 has had silent miscompiles (icellan/runar#175, #178), so every contract is tested differentially through real `Spend`. Gate d also found that Rúnar does not enforce argument widths, so every fixed-width value is length-checked by hand (10.3).
+8. **Fees.** Disputes cost about 10,000 sats at 1 sat/kB and about 1,000,000 at 100 sat/kB. The 1 sat/kB figure is an assumption until gate (a) records the rate it paid. Reserves are sized at table creation. A fee rise beyond the 4× margin leaves the timeout refund as the exit.
+9. **Script policy.** Checker scripts are about 0.43 MB each, under a stock node's 500 KB policy. The equation-1 `prepare` unlocking script is 925 KB, over that policy and under BSV Broadcaster's 100 MB. If gate (a) shows it is not relayed and mined, the referee splits `prepare` into one checker per step (10.6).
 10. **0-conf.** Money counts at `SEEN_ON_NETWORK`; miner collusion is out of scope (G-14).
 
 ## 14. Guardrails map
@@ -591,6 +612,8 @@ Written for mainnet.
 | (d) | The checker wiring accepts a real fraud proof and refuses a "fraud" claim against an honest answer. |
 | (e) | Fix icellan/runar#178 upstream, then the on-chain evaluator agrees with the reference over a large random corpus through `Spend`. |
 
+Status: c, d and e have passed (section 16). Gates a and b have their harnesses ready and are waiting for a funded testnet run and a BSV Desktop run (section 9).
+
 Then build the protocol package, the contracts, the client, the lobby and the watcher. A testnet gate script (G-33) exercises every transaction kind with headless `@bsv/wallet-toolbox` wallets before UI work.
 
 **Phase 2: up to 6 seats.** It covers:
@@ -603,24 +626,43 @@ Then build the protocol package, the contracts, the client, the lobby and the wa
 
 **Phase 3: mainnet readiness.** Cold reviews, a policy and fee re-check, the buy-in cap, a trust-model review, and reconsidering the post-hand audit.
 
-## 16. Spike evidence (throwaway)
+## 16. Evidence: gates and spikes
+
+### Gate results (`docs/gates/`, 2026-10-30)
+
+Gates c, d and e passed. Gate d and gate e run every transaction through `@bsv/sdk` `Spend` (MockProvider, every input validated), not through a node. Gates a and b are in section 9.
+
+- **Gate c: deal cost and MessageBox** (`docs/gates/c-deal-and-messagebox.md`). PASS.
+  - Live round trip over MessageBox: median 122 ms, p95 139 ms, max 155 ms, 50 of 50 pings and echoes with none lost. The limit was a 2 s median.
+  - No live send fell back to HTTP, and every quoted fee (`deliveryFee`, `recipientFee`) is 0, so MessageBox needs no reserve.
+  - Stored messages cost about 0.33 s per HTTP call, against about 0.06 s one way live. The client must acknowledge what it handles, or the box grows.
+  - The deal is about 1.6 s of arithmetic per seat per hand at C = 16, from `spikes/deal-cost/`.
+- **Gate d: checker wiring** (`docs/gates/d-checker-wiring.md`). PASS, after fix round 1.
+  - A referee-created pair of one-`ecMul` checkers convicts a false recorded proof on either equation, and refuses an honest one, including when the caller lies about a product. It refuses foreign, swapped, forged and boundary-shifted checkers.
+  - Sizes: one fraud proof is 1,921,675 B (equation 1) or 1,496,287 B (equation 2), against the 3.5 MB estimate; each checker script is under 500 KB (10.6).
+  - Findings that the real referee must meet are written into 10.3, 10.6 and 10.7: width checks, the phase-1 lapse path, record-time validation, and the 925 KB unlocking script.
+- **Gate e: the on-chain evaluator** (`docs/gates/e-evaluator.md`). PASS.
+  - `Eval7` is 11,420 B of script. It accepted the reference score for all 2,000 vectors of a corpus scored by the Go evaluator, including the rare categories and the board-plays ties, and rejected a score one too low or too high in all nine categories.
+  - It passes only on a Rúnar build with the icellan/runar#178 fix (the vendored build carries the #179 and #177 branches). On the earlier vendored build it failed the first hand.
+  - It does not reject duplicate cards and takes exactly seven cards (10.3).
+
+### Spikes
 
 **`spikes/referee/`:**
 
 - A heads-up referee (3,849-byte script), with every path tested through real `Spend` with BRC-100-style signatures.
   - Post or act is about 13.4 KB; forfeit or close about 4.8 KB.
-- A four-`ecMul` check is about 1.75 MB and validates in about 0.8 s.
-- A 7-card evaluator is 11 KB, blocked by Rúnar miscompiles: #175 is fixed in #177, and #178 is open.
+- A four-`ecMul` check is about 1.75 MB and validates in about 0.8 s. Gate d's two-checker pair replaces it as the design's measure (10.6).
 - The spike's `SINGLE|ANYONECANPAY` post hit #176, which draft 5 avoids.
 
-**`spikes/deal-cost/`:** the deal cost measured above.
+**`spikes/deal-cost/`:** the deal cost, repeated under gate c.
 
 **Not exercised:**
 
-- a broadcast;
-- BSV Desktop signatures;
+- a broadcast (gate a);
+- BSV Desktop signatures and its buy-in order (gate b);
 - streets and showdown on chain;
-- checker wiring;
+- the checker wiring against the real referee;
 - more seats.
 
 ## 17. Code layout and reuse
