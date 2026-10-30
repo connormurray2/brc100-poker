@@ -4,7 +4,7 @@
 // this harness built. A step's raw bytes are written before they are submitted (write-ahead), and a
 // re-run always resubmits those exact bytes rather than rebuilding, so a crash at any point resumes
 // without ever creating a second, conflicting spend.
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { chmodSync, closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync, writeSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { Hash, PrivateKey, Transaction, Utils } from '@bsv/sdk';
 import type { UTXO } from 'runar-sdk';
@@ -12,7 +12,8 @@ import type { FeeRate, TxStatus } from '../broadcaster.js';
 
 export const STEP_IDS = ['referee-deploy', 'prepare', 'fraud', 'hur-deploy', 'post', 'act', 'forfeit', 'refund'] as const;
 export type StepId = (typeof STEP_IDS)[number];
-export type StepState = 'built' | 'submitted' | 'seen' | 'mined';
+/** `unknown`: a POST was attempted and its outcome is not known (resolved by GET, never re-POSTed blindly). */
+export type StepState = 'built' | 'unknown' | 'submitted' | 'seen' | 'mined';
 
 export interface StepRecord {
   what: string;
@@ -39,6 +40,8 @@ export interface StepRecord {
   seenAt?: string;
   minedAt?: string;
   submitResponse?: { txid: string; status: string };
+  /** Why the last POST's outcome was unknown (a failed fetch, a 5xx, UNREACHABLE, an input-blaming 466). */
+  postUncertain?: { at: string; reason: string };
   /** ARC 476 answers (not final yet), with the tip we believed at the time. */
   notFinal?: Array<{ at: string; tip?: number; message: string }>;
   tipAtSubmit?: number;
@@ -114,7 +117,6 @@ export function loadOrCreateKey(path: string): { key: PrivateKey; created: boole
   return { key, created: true };
 }
 
-export const keyHex = (k: PrivateKey) => k.toHex().padStart(64, '0');
 export const pkhOf = (pubHex: string) => Utils.toHex(Hash.hash160(Utils.toArray(pubHex, 'hex')));
 export const p2pkhScript = (pkh: string) => `76a914${pkh}88ac`;
 
@@ -125,13 +127,21 @@ export function loadRun(path: string): RunFile | undefined {
   return JSON.parse(readFileSync(path, 'utf8')) as RunFile;
 }
 
-/** Atomic write: a crash mid-write never leaves a torn run file. */
+/** Atomic, durable write: the temp file is fsynced before the rename, then the directory is. */
 export function saveRun(path: string, run: RunFile): void {
   run.updatedAt = nowIso();
   mkdirSync(dirname(path), { recursive: true });
   const tmp = `${path}.tmp`;
-  writeFileSync(tmp, JSON.stringify(run, null, 1) + '\n', { mode: 0o600 });
+  const fd = openSync(tmp, 'w', 0o600);
+  try {
+    writeSync(fd, JSON.stringify(run, null, 1) + '\n');
+    fsyncSync(fd);
+  } finally {
+    closeSync(fd);
+  }
   renameSync(tmp, path);
+  const dir = openSync(dirname(path), 'r');
+  try { fsyncSync(dir); } finally { closeSync(dir); }
 }
 
 // ---- the wallet ----------------------------------------------------------------------------------

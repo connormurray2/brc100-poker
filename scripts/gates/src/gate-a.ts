@@ -27,17 +27,20 @@ import { fileURLToPath } from 'node:url';
 import { Hash, LockingScript, Transaction, UnlockingScript, Utils } from '@bsv/sdk';
 import { RunarContract } from 'runar-sdk';
 import type { RunarArtifact } from 'runar-ir-schema';
-import { BroadcastError, TESTNET_BROADCASTER, createBroadcaster, feeFor, type Broadcaster, type FeeRate } from './broadcaster.js';
+import { TESTNET_BROADCASTER, createBroadcaster, feeFor, type Broadcaster, type FeeRate } from './broadcaster.js';
 import {
-  STEP_IDS, knownTxs, loadOrCreateKey, loadRun, nowIso, saveRun, utxoOf, walletUtxos,
+  STEP_IDS, knownTxs, loadOrCreateKey, loadRun, nowIso, p2pkhScript, pkhOf, saveRun, utxoOf, walletUtxos,
   type HurParams, type RunFile, type StepId, type StepRecord,
 } from './gate-a/store.js';
 import {
-  FRAUD_EQ, REF_SATS, buildAct, buildForfeit, buildFraud, buildFunded, buildPost,
-  buildPrepare, buildRefund, efHexOf, efSizeOf, hurArgs, invalidProof, lookupIn, measure, potScript, refereeLockingScript,
-  seatsOf, sizePostCoin, templatesOf, walletOf, type HurKit, type RefereeKit, type Wallet,
+  FRAUD_EQ, POSTED, RAISE_TO, REF_SATS, assertOutputs, buildAct, buildForfeit, buildFraud, buildFunded, buildPost,
+  buildPrepare, buildRefund, continuationOf, efSizeOf, fraudExpected, hurArgs, hurState, invalidProof, lookupIn, measure,
+  potScript, prepareExpected, refereeLockingScript, seatsOf, sizePostCoin, takeSdkWarnings, templatesOf, walletOf,
+  type HurKit, type RefereeKit, type Wallet,
 } from './gate-a/txs.js';
 import { FakeBroadcaster } from './gate-a/fake-broadcaster.js';
+import { Stop, advance, type StepCtx, type TipSource } from './gate-a/steps.js';
+import { requireFundingToAddress, requireKnownToTestnet, requireTestnetAddress, requireTestnetBroadcaster } from './gate-a/guards.js';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../..');
 const SECRETS = join(ROOT, 'secrets');
@@ -58,33 +61,18 @@ const OBSERVED_POLICY = {
 };
 const DRY_RUN_START_TIP = 1_700_000;
 
-const TIMEOUTS = { seen: 15 * 60_000, mined: 6 * 3600_000, height: 12 * 3600_000, retry: 30 * 60_000 };
-const HEIGHT_POLL_MS = 60_000;
-
 const log = (msg: string) => console.log(`[${new Date().toISOString().slice(11, 19)}] ${msg}`);
 
 // ---- context ------------------------------------------------------------------------------------
 
-interface Ctx {
-  run: RunFile;
+interface Ctx extends StepCtx {
   runPath: string;
   dryRun: boolean;
   wallet: Wallet;
-  b: Broadcaster;
   fake?: FakeBroadcaster;
-  sleep: (ms: number) => Promise<void>;
-  now: () => number;
   ref: RefereeKit;
   hur: HurKit;
   rate: FeeRate;
-  stopAfter?: StepId;
-}
-
-class Stop extends Error {}
-
-function save(ctx: Ctx) {
-  if (ctx.fake) ctx.run.fakeChain = { tip: ctx.fake.tip };
-  saveRun(ctx.runPath, ctx.run);
 }
 
 function compileArtifacts(): Record<'mul' | 'gen' | 'ref' | 'hur', RunarArtifact> {
@@ -96,7 +84,7 @@ function compileArtifacts(): Record<'mul' | 'gen' | 'ref' | 'hur', RunarArtifact
 
 const scriptHash = (a: RunarArtifact) => Utils.toHex(Hash.sha256(Utils.toArray(a.script, 'hex')));
 
-// ---- step machinery ----------------------------------------------------------------------------
+// ---- recording ----------------------------------------------------------------------------------
 
 const stepTx = (ctx: Ctx, id: StepId) => {
   const s = ctx.run.steps[id];
@@ -110,22 +98,30 @@ const largestCoin = (ctx: Ctx) => {
   return u;
 };
 
-/** Write-ahead: measure and persist a built transaction before anything is submitted. */
-function record(ctx: Ctx, id: StepId, what: string, tx: Transaction, notes?: Record<string, unknown>): StepRecord {
+/**
+ * Write-ahead: check, measure and persist a built transaction before anything is submitted. Refuses
+ * unless every output pays exactly the expected script (the gate key, a seat payout pinned by a
+ * contract, or a contract script) and the fee covers the EF size.
+ */
+function record(ctx: Ctx, id: StepId, what: string, tx: Transaction, expected: string[], notes: Record<string, unknown> = {}): StepRecord {
+  assertOutputs(id, tx, expected);
   const txs = knownTxs(ctx.run);
   const policy = ctx.run.policy!;
   const m = measure(tx, lookupIn(txs), ctx.rate, policy);
   if (m.fee < m.required) throw new Error(`${id}: pays ${m.fee} sats, needs ${m.required} for ${m.efSize} EF bytes (builder bug)`);
+  const warnings = takeSdkWarnings();
+  if (warnings.length) notes.sdkWarnings = warnings;
   const rec: StepRecord = {
     what, txid: tx.id('hex'), rawHex: tx.toHex(), size: m.size, efSize: m.efSize, fee: m.fee, feeRate: ctx.rate,
     feeSizedOn: m.efSize, inputs: tx.inputs.length, outputs: tx.outputs.length, lockTime: tx.lockTime,
-    maxUnlockingScript: m.maxUnlockingScript, maxLockingScript: m.maxLockingScript, flags: m.flags, notes,
-    state: 'built', builtAt: nowIso(),
+    maxUnlockingScript: m.maxUnlockingScript, maxLockingScript: m.maxLockingScript, flags: m.flags,
+    notes: Object.keys(notes).length ? notes : undefined, state: 'built', builtAt: nowIso(),
   };
   ctx.run.steps[id] = rec;
-  save(ctx);
-  log(`${id}: built ${rec.txid} — ${m.size} B (EF ${m.efSize} B), fee ${m.fee} sats, largest unlocking script ${m.maxUnlockingScript} B`);
+  ctx.save();
+  log(`${id}: built ${rec.txid} — ${m.size} B (EF ${m.efSize} B), fee ${m.fee} sats, largest unlocking script ${m.maxUnlockingScript} B; outputs checked`);
   for (const f of m.flags) log(`${id}: FLAG ${f}`);
+  for (const w of warnings) log(`${id}: runar-sdk said (recorded in notes.sdkWarnings): ${w.slice(0, 160)}`);
   return rec;
 }
 
@@ -133,82 +129,15 @@ async function ensure(ctx: Ctx, id: StepId, build: () => Promise<void>) {
   if (!ctx.run.steps[id]) await build();
 }
 
-/** The best tip we know: /health blockHeight, or at least the highest block one of our transactions is in. */
-async function tipNow(ctx: Ctx): Promise<{ tip?: number; source: string }> {
-  const health = await ctx.b.tipHeight();
-  const mined = Math.max(-1, ...STEP_IDS.map((id) => ctx.run.steps[id]?.blockHeight ?? -1));
-  if (health !== undefined && health >= mined) return { tip: health, source: '/health blockHeight' };
-  if (mined >= 0) return { tip: mined, source: 'highest block holding a run transaction (lower bound)' };
-  return { source: 'unknown' };
-}
-
-const isTimelocked = (tx: Transaction) => tx.lockTime > 0 && tx.lockTime < 500_000_000 && tx.inputs.some((i) => (i.sequence ?? 0xffffffff) !== 0xffffffff);
-
-async function submitStep(ctx: Ctx, id: StepId, rec: StepRecord) {
-  const tx = Transaction.fromHex(rec.rawHex);
-  const ef = efHexOf(tx, knownTxs(ctx.run));
-  const timelocked = isTimelocked(tx);
-  const deadline = ctx.now() + (timelocked ? TIMEOUTS.height : TIMEOUTS.retry);
-  for (;;) {
-    const { tip, source } = await tipNow(ctx);
-    // One early attempt is allowed (it records the network refusing a non-final transaction, ARC
-    // 476, which persists nothing); after that, wait for the height before submitting again.
-    if (timelocked && tip !== undefined && tip < rec.lockTime && (rec.notFinal?.length ?? 0) > 0) {
-      if (ctx.now() + HEIGHT_POLL_MS > deadline) throw new Error(`${id}: height ${rec.lockTime} not reached (tip ${tip}); re-run to resume`);
-      log(`${id}: waiting for height ${rec.lockTime} (tip ${tip}, ${source})`);
-      await ctx.sleep(HEIGHT_POLL_MS);
-      continue;
-    }
-    try {
-      log(`${id}: POST /tx ${rec.txid} (${ef.length / 2} EF bytes)${timelocked ? `, nLockTime ${rec.lockTime}, tip ${tip ?? '?'}` : ''}`);
-      rec.submitResponse = await ctx.b.submit(ef);
-      Object.assign(rec, { state: 'submitted', submittedAt: nowIso(), tipAtSubmit: tip, tipSource: source });
-      save(ctx);
-      log(`${id}: POST answered ${rec.submitResponse.status} (provisional; waiting for GET /tx)`);
-      return;
-    } catch (e) {
-      if (!(e instanceof BroadcastError) || !e.retryable) throw e;
-      if (e.notFinal) {
-        (rec.notFinal ??= []).push({ at: nowIso(), tip, message: e.message });
-        save(ctx);
-        log(`${id}: not final yet (ARC 476): ${e.message}`);
-      } else {
-        log(`${id}: retryable failure: ${e.message}`);
-      }
-      if (ctx.now() + HEIGHT_POLL_MS > deadline) throw new Error(`${id}: still not accepted (${e.message}); re-run to resume`);
-      await ctx.sleep(HEIGHT_POLL_MS);
-    }
-  }
-}
-
-/** Takes a recorded step to SEEN (no competing transaction) or MINED. Resumes from whatever state it is in. */
-async function advance(ctx: Ctx, id: StepId, until: 'seen' | 'mined') {
-  const rec = ctx.run.steps[id]!;
-  if (rec.state === 'mined' || (until === 'seen' && rec.state === 'seen')) return;
-  if (rec.state !== 'built') {
-    // Resuming: only resubmit if this broadcaster has no record (404). Submission is idempotent anyway.
-    const st = await ctx.b.getStatus(rec.txid).catch(() => undefined);
-    if (st === undefined) rec.state = 'built';
-  }
-  if (rec.state === 'built') await submitStep(ctx, id, rec);
-  if (rec.state === 'submitted') {
-    const st = await ctx.b.waitForStatus(rec.txid, 'SEEN_ON_NETWORK', TIMEOUTS.seen);
-    Object.assign(rec, { state: 'seen', seenAt: nowIso(), seenStatus: st });
-    save(ctx);
-    log(`${id}: ${st.txStatus}, no competing transaction`);
-  }
-  if (until === 'mined' && rec.state === 'seen') {
-    const st = await ctx.b.waitForStatus(rec.txid, 'MINED', TIMEOUTS.mined);
-    const { merklePath: _m, ...kept } = st;
-    Object.assign(rec, {
-      state: 'mined', minedAt: nowIso(), minedStatus: kept, blockHeight: st.blockHeight, blockHash: st.blockHash,
-      blocksToMine: st.blockHeight !== undefined && rec.tipAtSubmit !== undefined ? st.blockHeight - rec.tipAtSubmit : undefined,
-    });
-    save(ctx);
-    log(`${id}: MINED in block ${st.blockHeight} (${rec.blocksToMine ?? '?'} block(s) after submit)`);
-  }
-  if (ctx.stopAfter === id) throw new Stop(`stopped after ${id} (--stop-after); re-run to resume`);
-}
+/** WhatsOnChain testnet's tip (`/chain/info` blocks): the funded run's second tip source. */
+const wocTip: TipSource = {
+  name: 'WhatsOnChain /chain/info blocks',
+  read: async () => {
+    const res = await fetch(`${WOC_TESTNET}/chain/info`, { signal: AbortSignal.timeout(15_000) });
+    const h = res.ok ? ((await res.json()) as { blocks?: unknown }).blocks : undefined;
+    return typeof h === 'number' && Number.isInteger(h) && h > 0 ? h : undefined;
+  },
+};
 
 // ---- the sequence --------------------------------------------------------------------------------
 
@@ -216,7 +145,7 @@ async function stepPolicy(ctx: Ctx) {
   if (!ctx.run.policy) {
     const p = await ctx.b.readPolicy();
     ctx.run.policy = { ...p, readAt: nowIso(), source: ctx.dryRun ? `dry run: the body read from ${TESTNET_BROADCASTER}/policy on 2026-10-30` : `${ctx.b.baseUrl}/policy` };
-    save(ctx);
+    ctx.save();
   }
   const p = ctx.run.policy;
   ctx.rate = p.miningFee;
@@ -228,14 +157,15 @@ async function gateReferee(ctx: Ctx) {
   const src = () => lookupIn(knownTxs(ctx.run));
   await ensure(ctx, 'referee-deploy', async () => {
     const tx = await buildFunded(w, largestCoin(ctx), [{ script: refereeLockingScript(ctx.ref), satoshis: REF_SATS }], rate, src());
-    record(ctx, 'referee-deploy', 'GateReferee deploy, recording an invalid proof (z + 1)', tx, { refereeLockingScript: tx.outputs[0]!.lockingScript.toBinary().length });
+    record(ctx, 'referee-deploy', 'GateReferee deploy, recording an invalid proof (z + 1)', tx, [refereeLockingScript(ctx.ref), w.script],
+      { refereeLockingScript: tx.outputs[0]!.lockingScript.toBinary().length });
   });
   await advance(ctx, 'referee-deploy', 'seen');
 
   await ensure(ctx, 'prepare', async () => {
     const ref = utxoOf(stepTx(ctx, 'referee-deploy'), 0);
     const tx = await buildPrepare(ctx.ref, w, src(), rate, ref, largestCoin(ctx));
-    record(ctx, 'prepare', `GateReferee.prepare (eq ${FRAUD_EQ}): creates EcMulGenCheck and EcMulCheck`, tx, {
+    record(ctx, 'prepare', `GateReferee.prepare (eq ${FRAUD_EQ}): creates EcMulGenCheck and EcMulCheck`, tx, prepareExpected(ctx.ref, w, ref), {
       refereeUnlock: tx.inputs[0]!.unlockingScript!.toBinary().length,
       checkerLockingScripts: [tx.outputs[1]!.lockingScript.toBinary().length, tx.outputs[2]!.lockingScript.toBinary().length],
     });
@@ -245,7 +175,7 @@ async function gateReferee(ctx: Ctx) {
   await ensure(ctx, 'fraud', async () => {
     const prep = stepTx(ctx, 'prepare');
     const tx = await buildFraud(ctx.ref, w, src(), rate, utxoOf(prep, 0), [utxoOf(prep, 1), utxoOf(prep, 2)], largestCoin(ctx));
-    record(ctx, 'fraud', 'GateReferee.fraud: spends the referee and both checkers, returns the bond', tx, {
+    record(ctx, 'fraud', 'GateReferee.fraud: spends the referee and both checkers, returns the bond', tx, fraudExpected(ctx.ref, w, utxoOf(prep, 0)), {
       refereeUnlock: tx.inputs[0]!.unlockingScript!.toBinary().length,
     });
   });
@@ -283,21 +213,23 @@ async function headsUp(ctx: Ctx) {
     const dummy = await buildRefund(ctx.hur.seats, dummyPot, base.refundLockTime, base.refundBal, true);
     const potSats = 2 * base.refundBal + feeFor(efSizeOf(dummy, () => dummyPot), rate);
     ctx.run.hur = { ...base, sdkRate, postCoinSats: coinSats };
-    save(ctx);
+    ctx.save();
 
     const tx = await buildFunded(w, largestCoin(ctx), [
       { script: escrowScript, satoshis: 2 * base.bal },
       { script: w.script, satoshis: coinSats }, // the post's exact-cover fee coin
       { script: pot, satoshis: potSats },
     ], rate, lookupIn(txs()));
-    record(ctx, 'hur-deploy', 'HeadsUpReferee deploy, plus the post\'s exact-cover coin and a 2-of-2 refund pot', tx, { params: ctx.run.hur });
+    record(ctx, 'hur-deploy', 'HeadsUpReferee deploy, plus the post\'s exact-cover coin and a 2-of-2 refund pot', tx,
+      [escrowScript, w.script, pot, w.script], { params: ctx.run.hur });
   });
   const p = ctx.run.hur!;
+  const seatPay = [p2pkhScript(pkhOf(ctx.hur.pk0)), p2pkhScript(pkhOf(ctx.hur.pk1))];
   // The refund is signed over the pot's txid before the pot is submitted (G-38), and recorded now;
   // it is submitted last, once its height has passed.
   await ensure(ctx, 'refund', async () => {
     const refund = await buildRefund(ctx.hur.seats, utxoOf(stepTx(ctx, 'hur-deploy'), 2), p.refundLockTime, p.refundBal);
-    record(ctx, 'refund', `pre-signed 2-of-2 refund, nLockTime ${p.refundLockTime} (sequence 0xfffffffe)`, refund);
+    record(ctx, 'refund', `pre-signed 2-of-2 refund, nLockTime ${p.refundLockTime} (sequence 0xfffffffe)`, refund, seatPay);
   });
   await advance(ctx, 'hur-deploy', 'seen');
 
@@ -305,7 +237,8 @@ async function headsUp(ctx: Ctx) {
     const d = stepTx(ctx, 'hur-deploy');
     const plan = { seq: p.seq, lockTime: p.postLockTime, deadline: p.postLockTime + p.window, bal: p.bal, window: p.window };
     const tx = await buildPost(ctx.hur, w, utxoOf(d, 0), utxoOf(d, 1), plan, p.sdkRate, txs());
-    record(ctx, 'post', `HeadsUpReferee.post seq ${p.seq} at its rung (nLockTime ${p.postLockTime}), SINGLE|ANYONECANPAY|FORKID, exact cover`, tx);
+    const cont = continuationOf(ctx.hur.art, utxoOf(d, 0), hurState(p, { ...POSTED, seq: p.seq, deadline: plan.deadline }));
+    record(ctx, 'post', `HeadsUpReferee.post seq ${p.seq} at its rung (nLockTime ${p.postLockTime}), SINGLE|ANYONECANPAY|FORKID, exact cover`, tx, [cont]);
   });
   await advance(ctx, 'post', 'seen');
 
@@ -313,8 +246,10 @@ async function headsUp(ctx: Ctx) {
     const escrow = utxoOf(stepTx(ctx, 'post'), 0);
     const st = RunarContract.fromUtxo(ctx.hur.art, escrow).state;
     if (st.phase !== 1n || st.toAct !== 1n || st.deadline !== BigInt(p.postLockTime + p.window)) throw new Error(`post state unexpected: ${JSON.stringify(st, (_k, v) => (typeof v === 'bigint' ? String(v) : v))}`);
-    const { tx } = await buildAct(ctx.hur, w, escrow, largestCoin(ctx), { bal: p.bal, deadline: p.postLockTime + 2 * p.window, seq: p.seq }, rate, policy.satPerKb, txs());
-    record(ctx, 'act', 'HeadsUpReferee.act: seat 1 raises on chain', tx);
+    const deadline = p.postLockTime + 2 * p.window;
+    const { tx } = await buildAct(ctx.hur, w, escrow, largestCoin(ctx), { bal: p.bal, deadline, seq: p.seq }, rate, policy.satPerKb, txs());
+    const cont = continuationOf(ctx.hur.art, escrow, hurState(p, { com0: POSTED.com0, com1: RAISE_TO, seq: p.seq + 1, toAct: 0, deadline }));
+    record(ctx, 'act', 'HeadsUpReferee.act: seat 1 raises on chain', tx, [cont, w.script]);
   });
   await advance(ctx, 'act', 'seen');
 
@@ -325,7 +260,7 @@ async function headsUp(ctx: Ctx) {
     const st = RunarContract.fromUtxo(ctx.hur.art, escrow).state;
     if (st.toAct !== 0n || st.deadline !== BigInt(p.forfeitLockTime)) throw new Error('act state unexpected');
     const tx = await buildForfeit(ctx.hur, w, escrow, largestCoin(ctx), { bal: p.bal, lockTime: p.forfeitLockTime }, rate, txs());
-    record(ctx, 'forfeit', `HeadsUpReferee.forfeit at nLockTime ${p.forfeitLockTime} (the deadline): seat 0 missed it`, tx);
+    record(ctx, 'forfeit', `HeadsUpReferee.forfeit at nLockTime ${p.forfeitLockTime} (the deadline): seat 0 missed it`, tx, [...seatPay, w.script]);
   });
   await advance(ctx, 'forfeit', 'mined');
 
@@ -435,17 +370,25 @@ async function main(argv: string[]) {
   })();
   const wallet = await walletOf(key);
   const address = key.toPublicKey().toAddress('testnet');
-  if (!/^[mn]/.test(address)) throw new Error(`refusing: ${address} is not a testnet address (G-02)`);
+  // G-02: the key's address must decode as testnet P2PKH and pay the wallet's own script.
+  if (p2pkhScript(requireTestnetAddress(address)) !== wallet.script) throw new Error(`refusing: ${address} does not pay the gate key`);
+  // G-02, G-09: the funded run broadcasts only to a testnet BSV Broadcaster (GATE_A_BROADCASTER may name the other one).
+  const broadcasterUrl = dryRun ? 'https://dry-run.invalid' : requireTestnetBroadcaster(process.env.GATE_A_BROADCASTER ?? TESTNET_BROADCASTER);
 
   const arts = compileArtifacts();
   const hashes = { EcMulCheck: scriptHash(arts.mul), EcMulGenCheck: scriptHash(arts.gen), GateReferee: scriptHash(arts.ref), HeadsUpReferee: scriptHash(arts.hur) };
 
   let run = loadRun(paths.run);
   if (run && run.address !== address) throw new Error(`${paths.run} belongs to ${run.address}, not this key's ${address}`);
+  if (run && !dryRun) {
+    requireTestnetAddress(run.address);
+    requireTestnetBroadcaster(run.broadcaster);
+    if (run.broadcaster !== broadcasterUrl) throw new Error(`${paths.run} was started on ${run.broadcaster}; resume it there (GATE_A_BROADCASTER)`);
+  }
   if (run?.artifacts && JSON.stringify(run.artifacts) !== JSON.stringify(hashes)) {
     throw new Error('the compiled contracts differ from the ones this run started with; refusing to resume with different scripts');
   }
-  run ??= { version: 1, dryRun, network: 'testnet', broadcaster: TESTNET_BROADCASTER, address, createdAt: nowIso(), updatedAt: nowIso(), steps: {} };
+  run ??= { version: 1, dryRun, network: 'testnet', broadcaster: broadcasterUrl, address, createdAt: nowIso(), updatedAt: nowIso(), steps: {} };
   run.artifacts = hashes;
 
   let fake: FakeBroadcaster | undefined;
@@ -458,22 +401,28 @@ async function main(argv: string[]) {
     let t = Date.now();
     now = () => t;
     sleep = async (ms) => { t += ms; fake!.mine(); }; // simulated time: every sleep is one block
-    b = createBroadcaster({ baseUrl: 'https://dry-run.invalid', fetch: fake.fetch, now, sleep });
+    b = createBroadcaster({ baseUrl: broadcasterUrl, fetch: fake.fetch, now, sleep });
   } else {
     sleep = (ms) => new Promise((r) => setTimeout(r, ms));
     now = Date.now;
-    b = createBroadcaster({ baseUrl: TESTNET_BROADCASTER });
+    b = createBroadcaster({ baseUrl: requireTestnetBroadcaster(broadcasterUrl) });
   }
-  if (!dryRun && b.baseUrl !== TESTNET_BROADCASTER) throw new Error('refusing: gate (a) broadcasts to the testnet BSV Broadcaster only (G-02, G-09)');
 
   const seats = seatsOf(key);
+  const runFile = run;
   const ctx: Ctx = {
-    run, runPath: paths.run, dryRun, wallet, b, fake, sleep, now, stopAfter,
+    run, runPath: paths.run, dryRun, wallet, b, fake, sleep, now, stopAfter, log,
+    save: () => {
+      if (fake) runFile.fakeChain = { tip: fake.tip };
+      saveRun(paths.run, runFile);
+    },
+    // Chain tip: the broadcaster's GET /health blockHeight, plus WhatsOnChain /chain/info in the funded run.
+    tipSources: dryRun ? [] : [wocTip],
     ref: { refArt: arts.ref, tmpl: templatesOf(arts.mul, arts.gen), rec: invalidProof() },
     hur: { art: arts.hur, seats, pk0: await seats[0].pub(), pk1: await seats[1].pub() },
     rate: { satoshis: 1, bytes: 1000 },
   };
-  log(`gate (a) ${dryRun ? 'DRY RUN (in-process broadcaster, MockProvider + Spend)' : `on ${TESTNET_BROADCASTER}`}; wallet ${address}; run file ${paths.run}`);
+  log(`gate (a) ${dryRun ? 'DRY RUN (in-process broadcaster, MockProvider + Spend)' : `on ${b.baseUrl}`}; wallet ${address}; run file ${paths.run}`);
 
   // Funding.
   if (!run.funding) {
@@ -483,15 +432,19 @@ async function main(argv: string[]) {
     } else {
       const txid = flag(args, '--funding');
       if (!txid || !/^[0-9a-f]{64}$/.test(txid)) throw new Error('first run needs --funding <txid> (the BSV Desktop payment to the gate address)');
-      run.funding = { txid, ...(await fetchFunding(ctx, txid, flag(args, '--funding-hex'))) };
+      const hexFile = flag(args, '--funding-hex');
+      const funding = { txid, ...(await fetchFunding(ctx, txid, hexFile)) };
+      requireFundingToAddress(Transaction.fromHex(funding.rawHex), txid, address);
+      // A file proves nothing about the network: the testnet broadcaster itself must report it.
+      if (hexFile) log(`funding ${txid}: the testnet broadcaster reports ${await requireKnownToTestnet(b, txid)}`);
+      run.funding = funding;
     }
-    const paid = Transaction.fromHex(run.funding.rawHex).outputs.filter((o) => o.lockingScript.toHex() === wallet.script);
-    if (paid.length === 0) throw new Error(`funding ${run.funding.txid} pays nothing to ${address}`);
-    save(ctx);
-    log(`funding ${run.funding.txid}: ${paid.reduce((s, o) => s + o.satoshis!, 0)} sats to the gate address (${run.funding.source})`);
   } else if (flag(args, '--funding') && flag(args, '--funding') !== run.funding.txid) {
     throw new Error(`this run is already funded by ${run.funding.txid}`);
   }
+  const coins = requireFundingToAddress(Transaction.fromHex(run.funding.rawHex), run.funding.txid, address);
+  ctx.save();
+  log(`funding ${run.funding.txid}: ${coins.reduce((s, c) => s + c.satoshis, 0)} sats in ${coins.length} P2PKH output(s) to the testnet gate address (${run.funding.source})`);
   if (fake) {
     fake.seed(Transaction.fromHex(run.funding.rawHex));
     for (const id of STEP_IDS) {

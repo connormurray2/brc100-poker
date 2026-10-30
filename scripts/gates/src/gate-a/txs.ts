@@ -310,6 +310,39 @@ export async function buildFraud(k: RefereeKit, w: Wallet, src: SourceLookup, ra
   });
 }
 
+// ---- what every output must pay ------------------------------------------------------------------
+
+/** The continuation a covenant spend must create: the deployed code with `state`. */
+export function continuationOf(art: RunarArtifact, utxo: UTXO, state: Record<string, unknown>): string {
+  const c = RunarContract.fromUtxo(art, utxo);
+  c.setState(state);
+  return c.getLockingScript();
+}
+
+/** prepare's outputs: the phase-1 continuation, the two checkers, change to the gate key. */
+export function prepareExpected(k: RefereeKit, w: Wallet, ref: UTXO): string[] {
+  const { L, M } = products(k.rec, FRAUD_EQ);
+  const r = k.rec;
+  return [
+    continuationOf(k.refArt, ref, { phase: 1n, eq: BigInt(FRAUD_EQ), L: aff(L), M: aff(M), bondPKH: w.pkh }),
+    genScript(k.tmpl, r.z, L), mulScript(k.tmpl, r.st.P1, cOf(r), M), w.script,
+  ];
+}
+
+/** fraud's outputs: the phase-2 continuation, the bond to the gate key, change to the gate key. */
+export function fraudExpected(k: RefereeKit, w: Wallet, ref: UTXO): string[] {
+  const st = RunarContract.fromUtxo(k.refArt, ref).state;
+  return [continuationOf(k.refArt, ref, { ...st, phase: 2n }), w.script, w.script];
+}
+
+/** Refuses a transaction unless its outputs pay exactly `expected`, in order. */
+export function assertOutputs(what: string, tx: Transaction, expected: string[]): void {
+  const got = tx.outputs.map((o) => o.lockingScript.toHex());
+  const bad = got.length !== expected.length ? [`${got.length} outputs, expected ${expected.length}`]
+    : got.flatMap((g, i) => (g === expected[i] ? [] : [`output ${i} pays an unexpected script (${g.length / 2} B, starts ${g.slice(0, 16)})`]));
+  if (bad.length) throw new Error(`${what}: refusing to record a transaction whose outputs are not the gate key's or the contracts': ${bad.join('; ')}`);
+}
+
 // ---- HeadsUpReferee seats, the refund pot ---------------------------------------------------------
 
 const ESCROW_PROTOCOL: [1, string] = [1, 'brc100 poker escrow'];
@@ -394,11 +427,20 @@ export class CaptureProvider implements Provider {
   async getRawTransaction(txid: string): Promise<string> { return (await this.getTransaction(txid)).raw!; }
 }
 
-/** Runs `fn` with the SDK's advisory console warnings collected instead of printed. */
-export async function quietly<T>(fn: () => Promise<T>, sink: string[] = []): Promise<T> {
+const sdkWarnings: string[] = [];
+
+/** Runs `fn` with the SDK's advisory console warnings collected (read them with takeSdkWarnings). */
+export async function quietly<T>(fn: () => Promise<T>): Promise<T> {
   const warn = console.warn;
-  console.warn = (...a: unknown[]) => { sink.push(a.map(String).join(' ')); };
+  console.warn = (...a: unknown[]) => { sdkWarnings.push(a.map(String).join(' ')); };
   try { return await fn(); } finally { console.warn = warn; }
+}
+
+/** The SDK warnings collected since the last call, deduplicated. */
+export function takeSdkWarnings(): string[] {
+  const out = [...new Set(sdkWarnings)];
+  sdkWarnings.length = 0;
+  return out;
 }
 
 export interface HurKit { art: RunarArtifact; seats: [Seat, Seat]; pk0: string; pk1: string }
@@ -467,6 +509,7 @@ export async function buildAct(k: HurKit, w: Wallet, escrow: UTXO, coin: UTXO, p
     const cap = new CaptureProvider([coin], sdkRate, txs);
     c.connect(cap, w.signer);
     const prepared = await quietly(() => c.prepareCall('act', [2n, BigInt(RAISE_TO), null], {
+      changeAddress: w.pkh, // change to the gate key, explicitly (not the SDK's signer default)
       outputs: [{ satoshis: 2 * p.bal, state: hurState(p, { com0: POSTED.com0, com1: RAISE_TO, seq: p.seq + 1, toAct: 0, deadline: p.deadline }) }],
     } as never));
     if (paidFee(prepared.tx, src) < feeFor(efSizeOf(prepared.tx, src) + 8, rate)) continue;

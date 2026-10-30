@@ -2,7 +2,7 @@
 // is provisional, only a GET can say MINED, and 404 / UNKNOWN / failed requests mean "not yet".
 import { describe, it, expect } from 'vitest';
 import { LockingScript, Transaction, UnlockingScript } from '@bsv/sdk';
-import { BroadcastError, createBroadcaster, feeFor, type Broadcaster } from '../src/broadcaster.js';
+import { BroadcastError, classifyPostFailure, classifyStatusRead, createBroadcaster, feeFor, type Broadcaster } from '../src/broadcaster.js';
 
 type Resp = { status: number; body?: unknown } | Error;
 interface Call { method: string; path: string; body?: string; headers: Record<string, string>; signal?: AbortSignal }
@@ -190,5 +190,47 @@ describe('broadcaster: policy, fees and height', () => {
     expect(await make({ 'GET /health': [{ status: 200, body: { healthy: true, blockHeight: 1_700_000 } }] }).b.tipHeight()).toBe(1_700_000);
     expect(await make({ 'GET /health': [{ status: 200, body: { healthy: true } }] }).b.tipHeight()).toBeUndefined();
     expect(await make({ 'GET /health': [new TypeError('fetch failed')] }).b.tipHeight()).toBeUndefined();
+  });
+});
+
+describe('broadcaster: G-11 classification', () => {
+  it('classifies status reads: only a 404 is "never received"; failures and 5xx are transient', async () => {
+    const { txid } = efTx();
+    const read = async (resp: Resp) => {
+      const { b } = make({ [`GET /tx/${txid}`]: [resp] });
+      return classifyStatusRead(txid, await b.readStatus(txid));
+    };
+    expect(await read({ status: 404, body: { error: 'not found' } })).toEqual({ kind: 'absent' });
+    expect((await read(new TypeError('fetch failed'))).kind).toBe('transient');
+    expect((await read({ status: 502, body: 'bad gateway' })).kind).toBe('transient');
+    expect((await read({ status: 503, body: 'busy' })).kind).toBe('transient');
+    expect((await read({ status: 400, body: { error: 'UNREACHABLE' } })).kind).toBe('transient');
+    expect((await read(status('ee'.repeat(32), 'MINED'))).kind).toBe('transient'); // another txid's body
+    expect((await read(status(txid, 'RECEIVED'))).kind).toBe('pending');
+    expect((await read(status(txid, 'SEEN_ON_NETWORK', { competingTxs: ['cd'.repeat(32)] }))).kind).toBe('pending');
+    expect((await read(status(txid, 'SEEN_ON_NETWORK'))).kind).toBe('seen');
+    expect((await read(status(txid, 'MINED', { blockHeight: 9 }))).kind).toBe('mined');
+    expect(await read(status(txid, 'REJECTED', { extraInfo: 'parent rejected: abcd', status: 461 }))).toMatchObject({ kind: 'terminal', reason: /parent rejected.*resubmit by hand/ });
+    expect((await read(status(txid, 'REJECTED', { extraInfo: 'UTXO_SPENT', status: 466 }))).kind).toBe('input-blamed');
+    expect((await read(status(txid, 'REJECTED', { extraInfo: 'missingorspent' }))).kind).toBe('input-blamed');
+    expect((await read(status(txid, 'REJECTED', { extraInfo: 'script evaluation failed', status: 461 }))).kind).toBe('terminal');
+    expect((await read(status(txid, 'DOUBLE_SPEND_ATTEMPTED', { competingTxs: ['cd'.repeat(32)] }))).kind).toBe('terminal');
+  });
+
+  it('classifies POST failures: an unanswered or uncertain POST is "unknown", never a blind re-POST', async () => {
+    const { ef } = efTx();
+    const post = async (resp: Resp) => {
+      const { b } = make({ 'POST /tx': [resp] });
+      return classifyPostFailure(await b.submit(ef).then(() => undefined, (e: unknown) => e));
+    };
+    expect((await post(new TypeError('fetch failed'))).kind).toBe('unknown');
+    expect((await post(new DOMException('The operation timed out.', 'TimeoutError'))).kind).toBe('unknown');
+    expect((await post({ status: 503, body: 'busy' })).kind).toBe('unknown');
+    expect((await post({ status: 502, body: 'bad gateway' })).kind).toBe('unknown');
+    expect((await post({ status: 400, body: { error: 'UNREACHABLE' } })).kind).toBe('unknown'); // G-11: transient
+    expect((await post({ status: 400, body: { error: 'transaction failed validation', reason: 'non-final', status: 476 } })).kind).toBe('not-final');
+    expect(await post({ status: 400, body: { error: 'transaction failed validation', reason: 'parent rejected', status: 461 } })).toMatchObject({ kind: 'terminal', reason: /parent rejected/ });
+    expect((await post({ status: 400, body: { error: 'transaction failed validation', reason: 'UTXO_SPENT', status: 466 } })).kind).toBe('input-blamed');
+    expect((await post({ status: 400, body: { error: 'transaction failed validation', reason: 'fee too low', status: 465 } })).kind).toBe('terminal');
   });
 });

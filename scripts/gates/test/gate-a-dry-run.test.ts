@@ -6,7 +6,7 @@ import { LockingScript, Transaction, UnlockingScript } from '@bsv/sdk';
 import { LocalSigner, encodePushData } from 'runar-sdk';
 import { createBroadcaster } from '../src/broadcaster.js';
 import { FakeBroadcaster } from '../src/gate-a/fake-broadcaster.js';
-import { efSizeOf, lookupIn } from '../src/gate-a/txs.js';
+import { assertOutputs, efSizeOf, lookupIn } from '../src/gate-a/txs.js';
 import { p2pkhScript, pkhOf, walletUtxos, type RunFile } from '../src/gate-a/store.js';
 
 const RATE = { satoshis: 1, bytes: 1000 };
@@ -105,5 +105,15 @@ describe('gate (a) sizes', () => {
     const tx = await spend({ fee: 1 });
     const parsed = Transaction.fromHex(tx.toHex()); // as the harness holds it: inputs by txid, no source attached
     expect(efSizeOf(parsed, lookupIn(new Map([[funding.id('hex'), funding]])))).toBe(tx.toHexEF().length / 2);
+  });
+});
+
+describe('gate (a) outputs', () => {
+  it('assertOutputs refuses a transaction paying any script but the expected ones, or a different count', async () => {
+    const { spend, script } = await setup();
+    const tx = await spend({ fee: 1 });
+    expect(() => assertOutputs('t', tx, [script.toHex()])).not.toThrow();
+    expect(() => assertOutputs('t', tx, [p2pkhScript('11'.repeat(20))])).toThrow(/output 0 pays an unexpected script/);
+    expect(() => assertOutputs('t', tx, [script.toHex(), script.toHex()])).toThrow(/1 outputs, expected 2/);
   });
 });

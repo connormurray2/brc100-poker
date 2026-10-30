@@ -90,6 +90,8 @@ export interface Broadcaster {
   submit(efHex: string): Promise<{ txid: string; status: string }>;
   /** One GET: the status, or undefined on 404. Throws on any other failure. */
   getStatus(txid: string): Promise<TxStatus | undefined>;
+  /** One GET that never throws: the HTTP answer, or the request's failure. Feed it to classifyStatusRead. */
+  readStatus(txid: string): Promise<StatusRead>;
   waitForStatus(txid: string, until: Until, timeoutMs: number): Promise<TxStatus>;
   waitFor(txid: string, until: Until, timeoutMs: number): Promise<string>;
   readPolicy(): Promise<Policy>;
@@ -106,6 +108,75 @@ export function feeFor(bytes: number, rate: FeeRate): number {
 export function reached(st: TxStatus, until: Until): boolean {
   if (until === 'MINED') return MINED_OR_LATER.includes(st.txStatus);
   return SEEN_OR_LATER.includes(st.txStatus) && (st.competingTxs ?? []).length === 0;
+}
+
+// ---- G-11: classify what the broadcaster said ---------------------------------------------------
+
+/** A raw `GET /tx/{txid}` answer, or why there was none. */
+export type StatusRead = { httpStatus: number; body: unknown } | { error: string };
+
+/**
+ * What a status read means for a transaction the harness has (or may have) POSTed:
+ *   absent      404: this instance never received it, so POSTing the same bytes is safe;
+ *   transient   no answer, a 5xx, 429, or another non-200: read again later, never re-POST on it;
+ *   pending     a non-terminal status (or SEEN with competing transactions);
+ *   seen/mined  at or past the gate with no competing transaction / in a block;
+ *   input-blamed REJECTED for its inputs (466, UTXO_SPENT, missingorspent, "already spent"): no verdict
+ *               if the transaction had been accepted before (it was probably mined or spent by itself);
+ *   terminal    REJECTED (including "parent rejected") or DOUBLE_SPEND_ATTEMPTED.
+ */
+export type ReadVerdict =
+  | { kind: 'absent' }
+  | { kind: 'transient'; reason: string }
+  | { kind: 'pending' | 'seen' | 'mined'; status: TxStatus }
+  | { kind: 'input-blamed'; status: TxStatus; reason: string }
+  | { kind: 'terminal'; reason: string; status?: TxStatus };
+
+/** What a failed POST means. `unknown` covers every case where the bytes may or may not have arrived. */
+export type PostVerdict =
+  | { kind: 'not-final'; reason: string }
+  | { kind: 'unknown'; reason: string }
+  | { kind: 'input-blamed'; reason: string }
+  | { kind: 'terminal'; reason: string };
+
+const INPUT_BLAMING = /UTXO_SPENT|missingorspent|already spent/i;
+const PARENT_REJECTED = /parent rejected/i;
+/** G-11's exact token: a transient condition of the broadcaster's view of the network. */
+const UNREACHABLE = /\bUNREACHABLE\b/;
+
+const reasonOf = (st: TxStatus) =>
+  `${st.txStatus}${st.status !== undefined ? ` (ARC ${st.status})` : ''}${st.extraInfo ? `: ${st.extraInfo}` : ''}`;
+
+export function classifyStatusRead(txid: string, r: StatusRead): ReadVerdict {
+  if ('error' in r) return { kind: 'transient', reason: `request failed: ${r.error}` };
+  if (r.httpStatus === 404) return { kind: 'absent' };
+  if (r.httpStatus !== 200) return { kind: 'transient', reason: `HTTP ${r.httpStatus}: ${describe(r.body)}` };
+  const st = r.body as TxStatus;
+  if (typeof st?.txStatus !== 'string' || st.txid !== txid) return { kind: 'transient', reason: `unusable body: ${describe(r.body)}` };
+  if (st.txStatus === 'DOUBLE_SPEND_ATTEMPTED') return { kind: 'terminal', reason: reasonOf(st) + (st.competingTxs?.length ? `; competing: ${st.competingTxs.join(', ')}` : ''), status: st };
+  if (st.txStatus === 'REJECTED') {
+    const why = st.extraInfo ?? '';
+    if (PARENT_REJECTED.test(why)) return { kind: 'terminal', reason: `${reasonOf(st)} — an ancestor was rejected; resubmit by hand once it is accepted`, status: st };
+    if (st.status === 466 || INPUT_BLAMING.test(why)) return { kind: 'input-blamed', status: st, reason: reasonOf(st) };
+    return { kind: 'terminal', reason: reasonOf(st), status: st };
+  }
+  if (reached(st, 'MINED')) return { kind: 'mined', status: st };
+  if (reached(st, 'SEEN_ON_NETWORK')) return { kind: 'seen', status: st };
+  return { kind: 'pending', status: st };
+}
+
+export function classifyPostFailure(err: unknown): PostVerdict {
+  if (!(err instanceof BroadcastError)) {
+    // A fetch that threw or timed out: the bytes may have arrived. Resolve by GET, never re-POST blindly.
+    return { kind: 'unknown', reason: `POST failed: ${err instanceof Error ? err.message : String(err)}` };
+  }
+  const b = (typeof err.body === 'object' && err.body !== null ? err.body : {}) as Record<string, unknown>;
+  const text = [b.error, b.reason, b.title, b.detail, typeof err.body === 'string' ? err.body : undefined].filter((x) => typeof x === 'string').join(' ');
+  if (err.notFinal) return { kind: 'not-final', reason: err.message };
+  if (err.httpStatus >= 500 || err.httpStatus === 429 || UNREACHABLE.test(text)) return { kind: 'unknown', reason: err.message };
+  if (PARENT_REJECTED.test(text)) return { kind: 'terminal', reason: `${err.message} — an ancestor was rejected; resubmit by hand once it is accepted` };
+  if (err.arcStatus === 466 || INPUT_BLAMING.test(text)) return { kind: 'input-blamed', reason: err.message };
+  return { kind: 'terminal', reason: err.message };
 }
 
 async function readBody(res: Response): Promise<unknown> {
@@ -156,6 +227,15 @@ export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
       `POST /tx ${txid}: HTTP ${res.status}${arc !== undefined ? ` ARC ${arc}` : ''}: ${b.reason ?? b.detail ?? b.error ?? describe(body)}`,
       res.status, arc, body, retryable, notFinal,
     );
+  }
+
+  async function readStatus(txid: string): Promise<StatusRead> {
+    try {
+      const { status, body } = await getJson(`/tx/${txid}`);
+      return { httpStatus: status, body };
+    } catch (e) {
+      return { error: (e as Error).message };
+    }
   }
 
   async function getStatus(txid: string): Promise<TxStatus | undefined> {
@@ -224,7 +304,7 @@ export function createBroadcaster(opts: BroadcasterOptions = {}): Broadcaster {
     }
   }
 
-  return { baseUrl, submit, getStatus, waitForStatus, waitFor, readPolicy, tipHeight };
+  return { baseUrl, submit, getStatus, readStatus, waitForStatus, waitFor, readPolicy, tipHeight };
 }
 
 // The brief's interface, bound to the testnet broadcaster and the global fetch.

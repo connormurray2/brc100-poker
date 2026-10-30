@@ -31,16 +31,39 @@ about 1.8 MB, whose referee unlocking script (about 925 KB) is nearly twice a st
    npm run gate:a -w scripts/gates -- run --funding <txid>
    ```
 
-   - The harness reads the funding transaction from BSV Broadcaster (`rawTx`) or from WhatsOnChain
+   - The harness reads the funding transaction from BSV Broadcaster (`rawTx`) or from WhatsOnChain testnet
      `/tx/{txid}/hex`. If neither has it, pass `--funding-hex <file>` with its raw hex.
-   - It checks that the transaction hashes to `<txid>` and pays the gate address.
+   - It refuses (G-02) unless:
+     - the transaction hashes to `<txid>`;
+     - the gate address decodes as a testnet P2PKH address (version `0x6f`);
+     - the transaction has a P2PKH output to it. Only those outputs are the gate's; the sender's change is never
+       touched.
+   - Under `--funding-hex` it also refuses unless the testnet broadcaster itself reports the txid
+     `SEEN_ON_NETWORK` (no competing transaction) or `MINED`, since a file proves nothing about the network.
+   - The broadcaster must be a testnet host: `https://arcade-v2-testnet-us-1.bsvblockchain.tech` (the default) or
+     `https://arcade-testnet-us-1.bsvblockchain.tech`, which `GATE_A_BROADCASTER` may name. Any other URL is
+     refused, mainnet and ttn included, and a resume must use the host its run file started on.
 4. **Resume.** Run `npm run gate:a -w scripts/gates -- run` again, with no flags, after any interruption: a timeout,
    Ctrl-C, a reboot.
-   - Progress lives in `secrets/gate-a-run.json`: each step's txid, raw hex, state (`built`, `submitted`, `seen`,
-     `mined`), sizes, fee, responses and timestamps.
+   - Progress lives in `secrets/gate-a-run.json`: each step's txid, raw hex, state (`built`, `unknown`,
+     `submitted`, `seen`, `mined`), sizes, fee, responses and timestamps. The file is fsynced before each atomic
+     rename.
    - **That file is the wallet.** There is no indexer, so never delete or edit it.
    - A built transaction is written down before it is POSTed, and a re-run resubmits those same bytes. It never
      rebuilds a step, so a crash cannot create a conflicting second spend.
+   - Broadcaster answers are classified per G-11:
+     - **On resume**, a step that was POSTed is read with `GET /tx/{txid}` first. Only a 404 ("never received")
+       sends the same bytes again.
+     - **Transient**: a network error, a timeout, a 5xx or `UNREACHABLE`. These are retried with backoff
+       (5 s, doubling, up to 5 min).
+     - **An uncertain POST** (its fetch failed, a 5xx, or `UNREACHABLE`) leaves the step `unknown`, and it is
+       resolved by GET, never re-POSTed blindly.
+     - **The run stops with a message, and rebuilds nothing,** on:
+       - `REJECTED`, including `parent rejected` (resubmit by hand once the ancestor is accepted);
+       - `DOUBLE_SPEND_ATTEMPTED`;
+       - an input-blaming 466 for a transaction the network never accepted.
+     - **An input-blaming rejection of a transaction already `SEEN`** is no verdict (G-11). It is read again, and
+       if it persists the run stops, pointing at WhatsOnChain.
    - `npm run gate:a -w scripts/gates -- status` prints the table at any time.
 5. **Expected duration.** The run needs:
    - one block for the GateReferee group;
@@ -78,10 +101,18 @@ The steps run in this order:
 Notes on the steps:
 - **Seats** sign as a BRC-100 wallet does, with `ProtoWallet.createSignature({ hashToDirectlySign })` under
   `[1, 'brc100 poker escrow']`. Their keys are derived from the gate key.
-- **Timelocked steps** (`forfeit`, `refund`) are POSTed once early, to record the network refusing a non-final
-  transaction (ARC 476, which persists nothing). After that, the harness waits until the tip (`GET /health`
-  `blockHeight`, never lower than the highest block holding one of its transactions) reaches the lock time, then
-  resubmits the identical bytes.
+- **Timelocked steps** (`forfeit`, `refund`) are never POSTed before their height. The harness polls the chain tip
+  once a minute and POSTs only once the tip is at least the lock time. The tip is the highest of:
+  - the broadcaster's `GET /health` `blockHeight`;
+  - WhatsOnChain testnet `GET /chain/info` `blocks` (funded run only; the harness already reads WhatsOnChain for
+    the funding transaction);
+  - the highest block holding one of the run's own transactions.
+
+  If the broadcaster's view lags and it answers ARC 476 anyway, the step records it in `notFinal`, waits a minute,
+  and resubmits the identical bytes.
+- **Every output is checked** before a transaction is recorded. It must pay exactly the expected script: the gate
+  key, a contract script (a continuation or a checker), or a seat payout the contract pins. `act`'s change is set
+  to the gate key explicitly. Rúnar SDK warnings are kept in the step's `notes.sdkWarnings` and printed.
 - **Broadcasting.** Every transaction goes through `POST /tx` as EF hex (`text/plain`) to
   `https://arcade-v2-testnet-us-1.bsvblockchain.tech`.
   - A step counts as seen only at `SEEN_ON_NETWORK` or later with an empty `competingTxs`.
@@ -154,8 +185,8 @@ own key and run file (`secrets/gate-a-dry-run.*`), and `--fresh` restarts it.
 **Result, 2026-10-30.**
 - Every transaction was accepted and "mined".
 - `MockProvider` ran `Spend` on **15 of 15 inputs**, skipping none.
-- The `forfeit` and the `refund` were each refused with ARC 476 one block, or more, before their height, and were
-  accepted at it.
+- The `forfeit` and the `refund` were not POSTed until the simulated tip reached their lock times (the harness
+  waited 3 and 1 blocks), and were accepted at it.
 
 | Step | Size (B) | EF (B) | Fee (sats) | Largest unlocking script (B) | Largest locking script (B) | In / out | `nLockTime` |
 |---|---|---|---|---|---|---|---|
@@ -193,7 +224,7 @@ Fill in from `npm run gate:a -w scripts/gates -- status` and `secrets/gate-a-run
 
 - `/policy` as read by the run: _(paste `policy.raw`)_
 - Fee rate paid: _(sat/kB)_
-- ARC 476 refusals before height (`forfeit`, `refund`): _(from `notFinal`)_
+- ARC 476 answers at height, if the broadcaster lagged (`forfeit`, `refund`): _(from `notFinal`; expected none)_
 - Response shapes that differed from the toolkit's documentation: _(none / list)_
 - Verdict: _(PASS if `prepare` and `fraud` are both `MINED`)_
 
