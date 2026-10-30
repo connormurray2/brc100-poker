@@ -43,7 +43,7 @@ export function statementBytes(st: DleqStatement, A1: Point, A2: Point): Uint8Ar
 
 /** Big-endian SHA-256 of `bytes`, reduced mod n. */
 export function challenge(bytes: Uint8Array): BigNumber {
-  return new BigNumber(Hash.sha256(Array.from(bytes)), 16, 'be').umod(N);
+  return new BigNumber(Hash.sha256(Array.from(bytes))).umod(N);
 }
 
 /**
@@ -53,14 +53,32 @@ export function challenge(bytes: Uint8Array): BigNumber {
 function nonce(nonceSecret: Uint8Array, st: DleqStatement): BigNumber {
   const digest = Hash.sha256(Array.from(statementCore(st)));
   const mac = Hash.sha256hmac(Array.from(nonceSecret), [...NONCE_TAG, ...digest]);
-  const w = new BigNumber(mac, 16, 'be').umod(N);
+  const w = new BigNumber(mac).umod(N);
   if (w.isZero()) throw new Error('derived a zero nonce');
   return w;
 }
 
-/** Prove log_B1 P1 = log_B2 P2 = s. */
+const sameAffine = (a: Point, b: Point): boolean => {
+  if (a.isInfinity() || b.isInfinity()) return false; // an infinite result never matches a finite A
+  return a.getX().cmp(b.getX()) === 0 && a.getY().cmp(b.getY()) === 0;
+};
+
+/**
+ * Prove log_B1 P1 = log_B2 P2 = s.
+ *
+ * The nonce depends only on the statement, so two proofs of one statement made with
+ * different scalars would publish c·(s - s') and expose s to anyone who knows s'. Hence
+ * `s` must be the true witness, and `nonceSecret` must be a full 32 bytes (an empty or
+ * short secret makes the nonce guessable and a single proof leaks the witness).
+ */
 export function prove(st: DleqStatement, s: BigNumber, nonceSecret: Uint8Array): DleqProof {
+  if (!(nonceSecret instanceof Uint8Array) || nonceSecret.length !== 32) {
+    throw new RangeError('nonceSecret must be exactly 32 bytes');
+  }
   if (s.isNeg() || s.isZero() || s.cmp(N) >= 0) throw new RangeError('witness must be in [1, n)');
+  if (!sameAffine(st.B1.mul(s), st.P1) || !sameAffine(st.B2.mul(s), st.P2)) {
+    throw new Error('s is not the witness of this statement');
+  }
   const w = nonce(nonceSecret, st);
   const A1 = st.B1.mul(w);
   const A2 = st.B2.mul(w);
@@ -68,15 +86,10 @@ export function prove(st: DleqStatement, s: BigNumber, nonceSecret: Uint8Array):
   return { A1, A2, z: w.add(c.mul(s)).umod(N) };
 }
 
-const finite = (p: Point): boolean => p instanceof Point && !p.isInfinity();
+const finite = (p: Point): boolean => p instanceof Point && !p.isInfinity() && p.validate();
 
 /** `k·p`, with the zero scalar giving the point at infinity instead of relying on the library. */
 const mulOrInfinity = (p: Point, k: BigNumber): Point => (k.isZero() ? new Point(null, null) : p.mul(k));
-
-const sameAffine = (a: Point, b: Point): boolean => {
-  if (a.isInfinity() || b.isInfinity()) return false; // an infinite result never matches a finite A
-  return a.getX().cmp(b.getX()) === 0 && a.getY().cmp(b.getY()) === 0;
-};
 
 /** Check z·B1 = A1 + c·P1 and z·B2 = A2 + c·P2. Never throws for a malformed proof. */
 export function verify(st: DleqStatement, pr: DleqProof): boolean {

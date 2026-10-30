@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { BigNumber, Curve, Point, Utils } from '@bsv/sdk';
+import { BigNumber, Curve, Hash, Point, Utils } from '@bsv/sdk';
 import { cardPoint } from '../src/cards.js';
 import { challenge, prove, statementBytes, statementCore, verify, type DleqStatement } from '../src/dleq.js';
 import { toAffine64, toCompressed } from '../src/points.js';
@@ -23,15 +23,27 @@ describe('dleq', () => {
     expect(verify(st, prove(st, s, secret))).toBe(true);
   });
 
-  it('rejects a statement whose P2 is for a different exponent', () => {
+  it('rejects an honest proof checked against a statement with another P2', () => {
     const st = statement();
     const pr = prove(st, s, secret);
     expect(verify({ ...st, P2: mul(X, s.add(bn(1))) }, pr)).toBe(false);
   });
 
-  it('rejects a prover who uses the wrong witness', () => {
+  it('prove throws when s is not the witness of the statement', () => {
     const st = statement();
-    expect(verify(st, prove(st, s.add(bn(1)).umod(n), secret))).toBe(false);
+    expect(() => prove(st, s.add(bn(1)).umod(n), secret)).toThrow();
+    expect(() => prove({ ...st, P2: mul(X, s.add(bn(1))) }, s, secret)).toThrow(); // P2 off
+    expect(() => prove({ ...st, P1: mul(G, s.add(bn(1))) }, s, secret)).toThrow(); // P1 off
+    expect(() => prove(st, bn(0), secret)).toThrow();
+    expect(() => prove(st, s.add(n), secret)).toThrow();
+  });
+
+  it('prove throws unless the nonce secret is exactly 32 bytes', () => {
+    const st = statement();
+    expect(() => prove(st, s, new Uint8Array(0))).toThrow();
+    expect(() => prove(st, s, new Uint8Array(31).fill(7))).toThrow();
+    expect(() => prove(st, s, new Uint8Array(33).fill(7))).toThrow();
+    expect(verify(st, prove(st, s, new Uint8Array(32).fill(1)))).toBe(true);
   });
 
   it('rejects z + 1', () => {
@@ -53,8 +65,21 @@ describe('dleq', () => {
     const inf = new Point(null, null);
     expect(verify(st, { ...pr, A1: inf })).toBe(false);
     expect(verify(st, { ...pr, A2: inf })).toBe(false);
-    expect(verify({ ...st, P1: inf }, pr)).toBe(false);
-    expect(verify({ ...st, B2: inf }, pr)).toBe(false);
+    for (const key of ['B1', 'P1', 'B2', 'P2'] as const) {
+      expect(verify({ ...st, [key]: inf }, pr)).toBe(false);
+    }
+  });
+
+  it('returns false, not a throw, for points that are not on the curve', () => {
+    const st = statement();
+    const pr = prove(st, s, secret);
+    const off = new Point(G.getX(), G.getY().add(bn(1)).umod(curve.p));
+    expect(off.validate()).toBe(false);
+    expect(verify(st, { ...pr, A1: off })).toBe(false);
+    expect(verify(st, { ...pr, A2: off })).toBe(false);
+    for (const key of ['B1', 'P1', 'B2', 'P2'] as const) {
+      expect(verify({ ...st, [key]: off }, pr)).toBe(false);
+    }
   });
 
   it('is deterministic', () => {
@@ -114,6 +139,47 @@ describe('dleq', () => {
     const c = challenge(Uint8Array.from([1, 2, 3]));
     expect(c.toHex(32)).toBe('039058c6f2c0cb492c533b0a4d14ef77cc0f78abccced5287d84a1a2011cfb81');
     expect(c.cmp(n)).toBeLessThan(0);
+  });
+
+  it('matches the pinned vector Task 5 recomputes on chain', () => {
+    const st: DleqStatement = {
+      domain: 'brc100-poker/test/v1',
+      B1: G,
+      P1: mul(G, bn(5)),
+      B2: cardPoint(0),
+      P2: mul(cardPoint(0), bn(5)),
+    };
+    const pr = prove(st, bn(5), secret);
+    const bytes = statementBytes(st, pr.A1, pr.A2);
+
+    // The nonce, computed independently of dleq.ts.
+    const w = new BigNumber(
+      Hash.sha256hmac(Array.from(secret), [
+        ...Utils.toArray('nonce', 'utf8'),
+        ...Hash.sha256(Array.from(statementCore(st))),
+      ]),
+    ).umod(n);
+    expect(hex(toAffine64(pr.A1))).toBe(hex(toAffine64(mul(G, w))));
+    expect(hex(toAffine64(pr.A2))).toBe(hex(toAffine64(mul(cardPoint(0), w))));
+
+    expect(hex(bytes)).toBe(
+      '6272633130302d706f6b65722f746573742f763100' +
+        '79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798483ada7726a3c4655da4fbfc0e1108a8fd17b448a68554199c47d08ffb10d4b8' +
+        '2f8bde4d1a07209355b4a7250a5c5128e88b84bddc619ab7cba8d569b240efe4d8ac222636e5e3d6d4dba9dda6c9c426f788271bab0d6840dca87d3aa6ac62d6' +
+        '1738215e26042202a099ecc26fe754243449ad80eb1b4fc83831fc77a5ebcc4c4a2973dec482348c75d81e6552f02aa8e9fa525805fdf55e72c6677f957feb4e' +
+        'c4eba27f0ed4419711e984b4b575ba7f5ea85204a9a527865191c3927913bb1bda4a70f00d54137fadcb72a879f72408d9da53869c523c475b0a48c0c8f27492' +
+        '3ca0f7cbfd36fbd5c3727d8117793e120865a1ed78d749b4bf2bbe1272fef1b99e3deae0024674ba0ccf5f0229eab3881ccb1ff2edba7d8c45432c4058856836' +
+        '8747b1b3b9aaacbdff3acbc4da76ae59474e69073fa297fff9cc04390fb55d9bab4a8ae0556933bb083d32ede82a854a9069199a2420619c134938a9517a9bfc',
+    );
+    expect(challenge(bytes).toHex(32)).toBe('be78eefbc4e16758becd5923cfbfac786a332434dc7cb0da2f7cbbfc7f156a0e');
+    expect(hex(toAffine64(pr.A1))).toBe(
+      '3ca0f7cbfd36fbd5c3727d8117793e120865a1ed78d749b4bf2bbe1272fef1b99e3deae0024674ba0ccf5f0229eab3881ccb1ff2edba7d8c45432c4058856836',
+    );
+    expect(hex(toAffine64(pr.A2))).toBe(
+      '8747b1b3b9aaacbdff3acbc4da76ae59474e69073fa297fff9cc04390fb55d9bab4a8ae0556933bb083d32ede82a854a9069199a2420619c134938a9517a9bfc',
+    );
+    expect(pr.z.toHex(32)).toBe('17cc927f92e031b8b915e369aad24affdc870b93ac6f7d6a948d4b37e37343c3');
+    expect(verify(st, pr)).toBe(true);
   });
 
   it('verifies the spec 7.3 step 2 remask pair', () => {
