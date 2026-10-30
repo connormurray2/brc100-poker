@@ -6,7 +6,7 @@ import type { Point } from 'runar-lang';
  *
  * Stateless. The statement (base, k, out) is baked into the locking script at creation, and
  * `verify()` takes no arguments, so anyone can spend it, and it spends only if the statement is
- * true. One `ecMul` is about 429 KB of script, so the referee creates one checker per equation
+ * true. One `ecMul` is about 427 KB of script (427,042 B here, 426,299 B for EcMulGenCheck), so the referee creates one checker per equation
  * (L = z·B and M = c·P) rather than packing two multiplications into a single script.
  * For a base of G use EcMulGenCheck, which is cheaper.
  */

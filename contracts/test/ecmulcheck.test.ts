@@ -42,7 +42,7 @@ describe('EcMulCheck and EcMulGenCheck (one multiplication each)', () => {
   let genArt: RunarArtifact;
 
   beforeAll(() => {
-    // One 429 KB compile per variant per file.
+    // One 427 KB compile per variant per file (427,042 B and 426,299 B).
     execFileSync('node', [join(contractsRoot, 'compile.mjs'), 'EcMulCheck', 'EcMulGenCheck'], { stdio: 'inherit' });
     mulArt = loadArtifact('EcMulCheck');
     genArt = loadArtifact('EcMulGenCheck');
