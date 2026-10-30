@@ -2,6 +2,9 @@
   "name": "@brc100-poker/protocol",
   "private": true,
   "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
   "description": "Pure TypeScript poker protocol primitives",
   "scripts": {
     "test": "vitest run"
