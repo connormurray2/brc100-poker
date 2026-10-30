@@ -2,6 +2,14 @@
 
 Status: **PASS** (2026-10-30), with one size finding for stock nodes (below).
 
+> **Revised 2026-10-30, after gate a.** The checkers below were one-`ecMul` `EcMulCheck` and `EcMulGenCheck`
+> scripts of about 427 KB, and their 1.85 MB `prepare` could not be submitted on testnet (gate a, run 1). The
+> referee now builds both checkers from one `WitnessEcMulCheck` body (55,416 B; the checker is 55,419 B plus a
+> 16,929 B spend witness), bound by length and SHA-256. All 15 tests in `contracts/test/gate-d.test.ts` pass on it.
+> One fraud proof is now 414,250 B raw on either equation (`prepare` 273,491 B with a 126,573 B unlocking script;
+> `fraud` 140,759 B). The sizes and segment layout below are the first design's, kept as the measurement of record;
+> see `a-testnet-mining.md` for the current checker.
+
 A Rúnar covenant, `GateReferee`, convicts a recorded Chaum–Pedersen proof that is false, and cannot be made to convict one that is true. The two expensive EC multiplications live in separate checker outputs:
 - `prepare` creates the checkers;
 - `fraud` spends them alongside the referee.

@@ -1,246 +1,161 @@
-# Gate a: the dispute transactions, mined on testnet
+# Gate a: the dispute transactions, accepted on testnet
 
-Status: **PENDING (funded run)**. The harness is built, and its dry run passes end to end (below). The gate is
-decided by the funded run.
+Status: **PASS (2026-10-30), on the second design.** All eight transaction kinds reached `SEEN_ON_NETWORK` or
+later with no competing transaction, within 75 s, paying 692 sats. The first run failed: its 1.85 MB `prepare`
+could not be submitted on testnet by any public route. Its checkers were then redesigned so every dispute
+transaction fits (Run 1, below).
 
-**Pass rule.** Gate (a) passes only if the `prepare` + `fraud` pair is **mined** on testnet, with `MINED` read from
-BSV Broadcaster `GET /tx/{txid}`, never from the POST. The other transactions are measured and should mine too.
-If one of them fails, record it, but it does not fail the gate.
+**Pass rule.** Every transaction kind is final at `SEEN_ON_NETWORK` or later with no competing transaction, read from
+BSV Broadcaster `GET /tx/{txid}`, never from the POST (toolkit G-10). Nothing waits for a block (G-14). Gate (a)
+passes when all eight are `SEEN`, the `prepare` + `fraud` pair above all.
 
-The design rests on these covenant transactions being relayed and mined by real nodes. That includes a `prepare` of
-about 1.8 MB, whose referee unlocking script (about 925 KB) is nearly twice a stock node's 500 KB
-`maxscriptsizepolicy`. Nobody has broadcast one yet.
+> The first version of this gate required `MINED`. That contradicted the toolkit (G-10, G-14), which wins. The
+> HeadsUpReferee's ladder is now anchored below the tip, so every nLockTime has passed when its transaction is
+> built. Maturing on chain (a 476 turning final) is therefore not exercised here.
 
-## Run it (Connor)
+## Run it
 
-1. **Create the key and print its address:**
+1. BSV Desktop running on **testnet** (the harness refuses any other network, G-02).
+2. `npm run gate:a -w scripts/gates -- run`. On the first run the harness:
+   - creates `secrets/gate-a.key` (mode 0600, gitignored) if it is missing; only its testnet address is printed;
+   - asks BSV Desktop (`WalletClient` over its JSON API on `localhost:3321`) for **9,000 sats** to that address.
+     Approve the prompt in the wallet;
+   - writes the funding to `secrets/gate-a-run.json`, posts it to its own broadcaster too (G-13), and spends it
+     once it is `SEEN_ON_NETWORK`.
 
-   ```bash
-   npm run gate:a -w scripts/gates -- address
-   ```
-
-   This creates `secrets/gate-a.key` (mode 0600, gitignored) if it is missing, and prints only the testnet address.
-   The key is never printed or logged.
-2. **Fund it.** From BSV Desktop on testnet, send **3,000,000 sats** to that address, topping up from
-   `https://bsvfaucet.com` first if needed.
-   - The run spends about 30,000 sats: about 3,000 in fees at 1 sat/kB, and the rest locked in the test contracts.
-   - Wait until the payment shows on `https://test.whatsonchain.com`.
-3. **Run it:**
-
-   ```bash
-   npm run gate:a -w scripts/gates -- run --funding <txid>
-   ```
-
-   - The harness reads the funding transaction from BSV Broadcaster (`rawTx`) or from WhatsOnChain testnet
-     `/tx/{txid}/hex`. If neither has it, pass `--funding-hex <file>` with its raw hex.
-   - It refuses (G-02) unless:
-     - the transaction hashes to `<txid>`;
-     - the gate address decodes as a testnet P2PKH address (version `0x6f`);
-     - the transaction has a P2PKH output to it. Only those outputs are the gate's; the sender's change is never
-       touched.
-   - Under `--funding-hex` it also refuses unless the testnet broadcaster itself reports the txid
-     `SEEN_ON_NETWORK` (no competing transaction) or `MINED`, since a file proves nothing about the network.
-   - The broadcaster must be a testnet host: `https://arcade-v2-testnet-us-1.bsvblockchain.tech` (the default) or
-     `https://arcade-testnet-us-1.bsvblockchain.tech`, which `GATE_A_BROADCASTER` may name. Any other URL is
-     refused, mainnet and ttn included, and a resume must use the host its run file started on.
-4. **Resume.** Run `npm run gate:a -w scripts/gates -- run` again, with no flags, after any interruption: a timeout,
-   Ctrl-C, a reboot.
-   - Progress lives in `secrets/gate-a-run.json`: each step's txid, raw hex, state (`built`, `unknown`,
-     `submitted`, `seen`, `mined`), sizes, fee, responses and timestamps. The file is fsynced before each atomic
-     rename.
-   - **That file is the wallet.** There is no indexer, so never delete or edit it.
-   - A built transaction is written down before it is POSTed, and a re-run resubmits those same bytes. It never
-     rebuilds a step, so a crash cannot create a conflicting second spend.
-   - Broadcaster answers are classified per G-11:
-     - **On resume**, a step that was POSTed is read with `GET /tx/{txid}` first. Only a 404 ("never received")
-       sends the same bytes again.
-     - **Transient**: a network error, a timeout, a 5xx or `UNREACHABLE`. These are retried with backoff
-       (5 s, doubling, up to 5 min).
-     - **An uncertain POST** (its fetch failed, a 5xx, or `UNREACHABLE`) leaves the step `unknown`, and it is
-       resolved by GET, never re-POSTed blindly.
-     - **The run stops with a message, and rebuilds nothing,** on:
-       - `REJECTED`, including `parent rejected` (resubmit by hand once the ancestor is accepted);
-       - `DOUBLE_SPEND_ATTEMPTED`;
-       - an input-blaming 466 for a transaction the network never accepted.
-     - **An input-blaming rejection of a transaction already `SEEN`** is no verdict (G-11). It is read again, and
-       if it persists the run stops, pointing at WhatsOnChain.
-   - `npm run gate:a -w scripts/gates -- status` prints the table at any time.
-5. **Expected duration.** The run needs:
-   - one block for the GateReferee group;
-   - one block for the HeadsUpReferee group;
-   - then the tip to reach `h0 + 4` (the forfeit) and `h0 + 6` (the refund), where `h0` is the fraud's block.
-
-   That is at least about 7 blocks, so expect an hour or more, since testnet blocks are irregular.
-   - Timeouts: 15 min to `SEEN_ON_NETWORK`, 6 h to `MINED`, 12 h for a height. Past any of them the run stops with
-     "re-run to resume".
-6. **Record the results.** Fill in the results table below from `status`, then set the status line.
+   `--funding <txid>` (and `--funding-hex <file>`) fund from P2PKH outputs to the gate address in an existing
+   transaction instead.
+3. **Resume** with the same command after any interruption. Progress lives in `secrets/gate-a-run.json`: each
+   step's txid, raw hex, state (`built`, `unknown`, `submitted`, `seen`), sizes, fee, responses and timestamps,
+   fsynced before each atomic rename. **That file is the wallet**: never delete or edit it. A built transaction is
+   written down before it is POSTed and is never rebuilt, so a crash cannot create a conflicting second spend. The
+   harness refuses to resume a run file with different compiled contracts.
+   Broadcaster answers are classified per G-11: transient ones are retried with backoff; an uncertain POST is
+   resolved by GET; `REJECTED`, `DOUBLE_SPEND_ATTEMPTED` and an input-blaming 466 on a never-accepted transaction
+   stop the run.
+4. `npm run gate:a -w scripts/gates -- status` prints the table at any time.
+5. `npm run gate:a -w scripts/gates -- run --dry-run --fresh` runs the whole sequence on an in-process broadcaster,
+   where `MockProvider` runs `@bsv/sdk` `Spend` on every input (15 of 15) and the fake checks EF source outputs,
+   double spends, the fee and the `/policy` limits. `test/gate-a-dry-run.test.ts` pins those refusals.
 
 ## What the run does
 
-The harness is `scripts/gates/src/gate-a.ts`, with:
-- `gate-a/txs.ts`, the transaction builders;
-- `gate-a/store.ts`, the key, the run file and the wallet;
-- `gate-a/fake-broadcaster.ts`, the dry run's broadcaster;
-- `broadcaster.ts`, the BSV Broadcaster client, unit-tested in `test/broadcaster.test.ts`.
+`scripts/gates/src/gate-a.ts`, with `gate-a/txs.ts` (builders), `gate-a/store.ts` (key, run file, wallet),
+`gate-a/desktop.ts` (BSV Desktop funding), `gate-a/fake-broadcaster.ts` (the dry run) and `broadcaster.ts`.
 
-The steps run in this order:
+| # | Step | Transaction |
+|---|---|---|
+| 1 | `/policy` | Read once and stored. Every fee uses its `miningFee`, on the EF size. |
+| 2 | `referee-deploy` | A `GateReferee` recording an invalid proof (gate d's pinned vector under domain `brc100-poker/gate-a/v1`, with `z + 1`). 2,000 sats, bond 1,000. |
+| 3 | `prepare` | Equation 1. Creates `WitnessEcMulCheck(G, z, L)` and `WitnessEcMulCheck(P1, c, M)` and posts the bond. |
+| 4 | `fraud` | Spends the referee and both checkers, each with its 16,929 B slope witness, and returns the bond. |
+| 5 | `hur-deploy` | A `HeadsUpReferee` (W = 2, K = 12, two 1,000-sat stacks), the post's exact-cover fee coin and a 2-of-2 refund pot. The ladder's anchor is 3W + 1 blocks below the tip. |
+| 5′ | `refund` | Pre-signed by both seats (`ALL\|FORKID`, sequence `0xfffffffe`) before the pot is submitted (G-38). Submitted last. |
+| 6 | `post` | The co-signed state `seq 3` at its rung. `SINGLE\|ANYONECANPAY\|FORKID`, exact cover (icellan/runar#176). |
+| 7 | `act` | Seat 1 raises to 600 on chain. |
+| 8 | `forfeit` | Anyone forfeits seat 0 at the deadline. Payouts pinned; the fee coin's change trails. |
+| 9 | `refund` | The pre-signed refund. |
 
-| # | Step | Transaction | Waits for |
-|---|---|---|---|
-| 1 | `/policy` | Read once and stored, with the raw body. Every fee uses its `miningFee`. | — |
-| 2 | `referee-deploy` | A `GateReferee` recording an invalid proof: gate-d's pinned vector under domain `brc100-poker/gate-a/v1`, with `z + 1`. 2,000 sats, bond 1,000. | `SEEN` |
-| 3 | `prepare` | eq 1, the largest shape. Creates `EcMulGenCheck(z, L)` and `EcMulCheck(P1, c, M)` and posts the bond. | `SEEN` |
-| 4 | `fraud` | Spends the referee and both checkers, and returns the bond to the gate key. | `SEEN`, then 2–4 all `MINED` |
-| 5 | `hur-deploy` | A `HeadsUpReferee` (W = 2, K = 12, two 10,000-sat stacks, `anchor = h0 − 18`), the post's exact-cover fee coin and a 2-of-2 refund pot. | `SEEN` |
-| 5′ | `refund` | Pre-signed by both seats (`ALL\|FORKID`, sequence `0xfffffffe`, `nLockTime = h0 + 6`) before the pot is submitted (G-38). Recorded now, submitted last. | — |
-| 6 | `post` | The co-signed state `seq 3` at its rung, `nLockTime = h0`. `SINGLE\|ANYONECANPAY\|FORKID`, funded exact cover with no change (icellan/runar#176). | `SEEN` |
-| 7 | `act` | Seat 1 raises to 600 on chain. The deadline moves to `h0 + 4`. | `SEEN`, then 5–7 all `MINED` |
-| 8 | `forfeit` | Anyone forfeits seat 0 at `nLockTime = h0 + 4`. The payouts are pinned; the fee coin's change is the contract's trailing output. | the height, then `MINED` |
-| 9 | `refund` | The pre-signed refund. | the height, then `MINED` |
+Seats sign as a BRC-100 wallet does (`ProtoWallet.createSignature({ hashToDirectlySign })` under
+`[1, 'brc100 poker escrow']`), with keys derived from the gate key. Every output is checked against its expected
+script before a transaction is recorded.
 
-Notes on the steps:
-- **Seats** sign as a BRC-100 wallet does, with `ProtoWallet.createSignature({ hashToDirectlySign })` under
-  `[1, 'brc100 poker escrow']`. Their keys are derived from the gate key.
-- **Timelocked steps** (`forfeit`, `refund`) are never POSTed before their height. The harness polls the chain tip
-  once a minute and POSTs only once the tip is at least the lock time. The tip is the highest of:
-  - the broadcaster's `GET /health` `blockHeight`;
-  - WhatsOnChain testnet `GET /chain/info` `blocks` (funded run only; the harness already reads WhatsOnChain for
-    the funding transaction);
-  - the highest block holding one of the run's own transactions.
+## Results
 
-  If the broadcaster's view lags and it answers ARC 476 anyway, the step records it in `notFinal`, waits a minute,
-  and resubmits the identical bytes.
-- **Every output is checked** before a transaction is recorded. It must pay exactly the expected script: the gate
-  key, a contract script (a continuation or a checker), or a seat payout the contract pins. `act`'s change is set
-  to the gate key explicitly. Rúnar SDK warnings are kept in the step's `notes.sdkWarnings` and printed.
-- **Broadcasting.** Every transaction goes through `POST /tx` as EF hex (`text/plain`) to
-  `https://arcade-v2-testnet-us-1.bsvblockchain.tech`.
-  - A step counts as seen only at `SEEN_ON_NETWORK` or later with an empty `competingTxs`.
-  - It counts as mined only from a GET that says `MINED`.
-  - `REJECTED` and `DOUBLE_SPEND_ATTEMPTED` stop the run.
-- **Fees** are sized from the serialized transaction at the `/policy` rate, on the **EF** size, with a floor of
-  1 sat.
-  - The EF size is what is POSTed, and it is the larger size. The broadcaster's OpenAPI says fee checks are
-    delegated to the network, which prices raw bytes, so this overpays: most on `fraud`, whose EF carries both
-    427 KB checker scripts (997 sats against 108 for raw).
-  - The fee paid by every transaction is recorded.
+### Run 2: PASS (2026-10-30, 17:07:31–17:08:46 UTC)
 
-## `/policy`, read 2026-10-30
+Funding: the 6,964-sat change output of run 1's referee deploy (`cfdbb387…aa4e2e:1`), never spent on the network.
+`/policy`: 1 sat/kB, `maxtxsizepolicy` and `maxscriptsizepolicy` 100,000,000. Tip 1,766,009; ladder anchor
+1,765,984.
 
-`GET https://arcade-v2-testnet-us-1.bsvblockchain.tech/policy` answered:
-
-```json
-{"policy":{"miningFee":{"satoshis":1,"bytes":1000},"maxtxsizepolicy":100000000,"maxscriptsizepolicy":100000000,"maxtxsigopscountspolicy":4294967295,"standardFormatSupported":true},"timestamp":"2026-10-30T12:06:36.626896277Z"}
-```
-
-This matches the toolkit's documented shape and values: 1 sat/kB, and 100 MB for both size limits. The funded run
-reads it again and stores the body it gets.
-
-## Sizes against policy
-
-These are the dry-run sizes. They are deterministic for this harness and match gate d to within a few bytes, from
-the longer domain string.
-
-| Item | Bytes | `/policy` (100,000,000) | Stock node default |
-|---|---|---|---|
-| `prepare`, whole transaction | 1,814,369 | under | under `maxtxsizepolicy` 10 MB |
-| `prepare`, referee unlocking script (input 0) | **924,738** | under | **over `maxscriptsizepolicy` 500,000 (1.85×)** |
-| `EcMulCheck` locking script (`prepare` output 2) | 427,300 | under | under, 72,700 B headroom |
-| `EcMulGenCheck` locking script (`prepare` output 1) | 426,427 | under | under |
-| `fraud`, whole transaction / referee unlocking script | 107,317 / 71,323 | under | under |
-| `GateReferee` locking script | 35,631 | under | under |
-| `HeadsUpReferee` locking script | 4,314 | under | under |
-
-Nothing exceeds the limits `/policy` reports, so nothing was shrunk.
-
-**Flag.** The `prepare` referee unlocking script is over a stock node's 500 KB script policy.
-- The toolkit notes that some peers advertise 500,000 B, so it may reach fewer nodes even though BSV Broadcaster
-  accepts it.
-- That is exactly what the funded run tests: if `prepare` is relayed and mined, a 925 KB unlocking script is
-  minable on testnet today.
-- If it is refused, the result is a gate failure with that reason. The real referee must then keep every
-  unlocking script under 500 KB, for example by creating one checker per `prepare` step, which also drops the
-  second template.
-
-## Dry run
-
-```bash
-npm run gate:a -w scripts/gates -- run --dry-run --fresh
-```
-
-**The dry-run broadcaster.** The dry run drives the same harness and the same `broadcaster.ts`, through EF hex,
-`POST /tx`, `GET /tx/{txid}` and `GET /health`, against an in-process broadcaster behind a fake `fetch`. Every
-transaction goes through Rúnar's `MockProvider`, which runs `@bsv/sdk` `Spend` on every input. On top of that the
-fake broadcaster:
-- checks that each EF's claimed source outputs match its chain;
-- refuses double spends;
-- requires the fee on the EF size at the `/policy` rate;
-- applies the `/policy` size limits;
-- answers non-final lock times with ARC 476 and persists nothing.
-
-`test/gate-a-dry-run.test.ts` pins each of those refusals. Blocks are mined only when the harness sleeps, one block
-per sleep, so `MINED` is learned from a GET, as on testnet. The dry run serves the `/policy` body above. It uses its
-own key and run file (`secrets/gate-a-dry-run.*`), and `--fresh` restarts it.
-
-**Result, 2026-10-30.**
-- Every transaction was accepted and "mined".
-- `MockProvider` ran `Spend` on **15 of 15 inputs**, skipping none.
-- The `forfeit` and the `refund` were not POSTed until the simulated tip reached their lock times (the harness
-  waited 3 and 1 blocks), and were accepted at it.
-
-| Step | Size (B) | EF (B) | Fee (sats) | Largest unlocking script (B) | Largest locking script (B) | In / out | `nLockTime` |
+| Step | txid | Raw (B) | EF posted (B) | Fee | Largest unlock (B) | `nLockTime` | Status |
 |---|---|---|---|---|---|---|---|
-| `referee-deploy` | 35,834 | 35,874 | 36 | 107 | 35,631 | 1 / 2 | 0 |
-| `prepare` | 1,814,369 | 1,850,051 | 1,851 | 924,738 | 427,300 | 2 / 4 | 0 |
-| `fraud` | 107,317 | 996,752 | 997 | 71,323 | 35,631 | 4 / 3 | 0 |
-| `hur-deploy` | 4,630 | 4,670 | 5 | 106 | 4,314 | 1 / 4 | 0 |
-| `post` | 13,426 | 17,791 | 21 | 8,901 | 4,314 | 2 / 1 | h0 |
-| `act` | 13,388 | 17,753 | 21 | 8,829 | 4,314 | 2 / 2 | 0 |
-| `forfeit` | 4,802 | 9,167 | 10 | 4,500 | 25 | 2 / 3 | h0 + 4 |
-| `refund` | 266 | 352 | 1 | 147 | 25 | 1 / 2 | h0 + 6 |
-| **Total** | | | **2,942** | | | | |
+| `referee-deploy` | `5504d15ef860f1649f74fb94d0c93d5dadb8fcb25d5fcc4e26f6cd5e113eb59e` | 35,693 | 35,733 | 36 | 106 | 0 | `SEEN_MULTIPLE_NODES` |
+| `prepare` | `aa8762a1d7145bd14281e36f89f1d06a3a61611eba7f0d2ab4d96808f9026a95` | 273,496 | 309,038 | 310 | 126,576 | 0 | `SEEN_MULTIPLE_NODES` |
+| `fraud` | `d27650327dc6901b6842622ae0f0d11f72737120f7684f7d65eacd83020f22c4` | 140,764 | 287,487 | 288 | 71,042 | 0 | `SEEN_ON_NETWORK`, then `SEEN_MULTIPLE_NODES` |
+| `hur-deploy` | `5887c406ce911e1262678f4c3fc7bd6abd2e9d03b3f1a8d7f05cd33e4e0eeb1c` | 4,631 | 4,671 | 5 | 107 | 0 | `SEEN_MULTIPLE_NODES` |
+| `post` | `aef1d1bd0cbfb83a97da52322946ee604b12c5ac1dec95416b7f874b1c6c8514` | 13,427 | 17,792 | 21 | 8,901 | 1,766,002 | `SEEN_MULTIPLE_NODES` |
+| `act` | `a0e069ae282aeae0c1d012ed581acc370fb2060c8eac73744ad7416595b4b9b6` | 13,388 | 17,753 | 21 | 8,828 | 0 | `SEEN_MULTIPLE_NODES` |
+| `forfeit` | `abf62df3c4906a075df9058a805f01342cbbdfaae09ba5e125b3a665853c2f3c` | 4,801 | 9,166 | 10 | 4,499 | 1,766,006 | `SEEN_ON_NETWORK`, then `SEEN_MULTIPLE_NODES` |
+| `refund` | `f45f8a10ab0221dd7bd154ce36ef5c68f7b8c2f43289b7bb882275cfdf6a5ebf` | 266 | 352 | 1 | 147 | 1,766,008 | `SEEN_ON_NETWORK`, then `SEEN_MULTIPLE_NODES` |
+| **Total** | | | | **692** | | | |
 
-One fraud proof, `prepare` + `fraud`, is **1,921,686 B** raw and costs 2,848 sats at 1 sat/kB on EF bytes.
+Every status was read from `GET /tx/{txid}` with empty `competingTxs`, and all eight were read again afterwards at
+`SEEN_MULTIPLE_NODES`. Each step took 5–11 s from POST to `SEEN`. No answer differed from the toolkit's documented
+shapes, and no 476 was returned.
 
-**Resume.** The dry run was also stopped after `prepare`, `fraud`, `hur-deploy`, `post` and `act` in turn
-(`--stop-after <step>`), and each re-run resumed where the last one stopped.
-- To simulate a crash between the write-ahead and the POST, `act` was set back to `built` in the run file.
-- The re-run resubmitted the identical bytes (same txid) and finished the sequence.
+- **One fraud proof** (`prepare` + `fraud`) is 414,260 B raw, 596,525 B posted, 598 sats at 1 sat/kB on EF bytes.
+- **No size reaches a stock node's limits**: the largest unlocking script is 126,576 B, against a 500 KB
+  `maxscriptsizepolicy`.
 
-## Results (funded run)
+### Run 1: FAIL (2026-10-30, 16:13 UTC), with one-`ecMul` checkers
 
-Fill in from `npm run gate:a -w scripts/gates -- status` and `secrets/gate-a-run.json`.
+Funded with 9,000 sats from BSV Desktop (`12bcf36a…680e4e26`, `SEEN_ON_NETWORK` 8 s after approval). The
+referee deploy (`cfdbb387…aa4e2e`) reached `SEEN_MULTIPLE_NODES`. The `prepare` (`63538c5e…131f186e`) was
+1,814,369 B raw and 1,850,051 B posted, with a 924,737 B unlocking script carrying both 427 KB checker templates.
+It answered `HTTP 500 {"error":"failed to submit"}` and stayed `RECEIVED`. Its inputs were never spent on the
+network; run 2 spent the change. The run file is kept as `secrets/gate-a-run-1-stuck.json`.
 
-| Step | txid | Size (B) | Fee (sats) | `SEEN` after POST | Block | Blocks to mine | Result |
-|---|---|---|---|---|---|---|---|
-| `referee-deploy` | | | | | | | |
-| `prepare` | | | | | | | |
-| `fraud` | | | | | | | |
-| `hur-deploy` | | | | | | | |
-| `post` | | | | | | | |
-| `act` | | | | | | | |
-| `forfeit` | | | | | | | |
-| `refund` | | | | | | | |
+Why, all with the identical bytes:
 
-- `/policy` as read by the run: _(paste `policy.raw`)_
-- Fee rate paid: _(sat/kB)_
-- ARC 476 answers at height, if the broadcaster lagged (`forfeit`, `refund`): _(from `notFinal`; expected none)_
-- Response shapes that differed from the toolkit's documentation: _(none / list)_
-- Verdict: _(PASS if `prepare` and `fraud` are both `MINED`)_
+1. **The broadcaster validates it.** A copy with one signature byte flipped is rejected at once with
+   `461 TX_INVALID … Signature must be zero for failed CHECK(MULTI)SIG`, exactly as a 35 KB copy is.
+2. **The broadcaster cannot pass it on.** In `bsv-blockchain/broadcaster` at `8b48db6`,
+   `services/api_server/handlers.go` stores the `RECEIVED` row, then publishes `{txid, raw_tx, input_txids}` to
+   Kafka. The publish fails (`"failed to submit"`, line 1026) because `raw_tx` goes base64 in JSON (about
+   2.47 MB here) and Sarama's default `Producer.MaxMessageBytes` is 1 MiB. So about 750 KB of posted bytes is
+   the real limit, whatever `/policy` says. `arcade-testnet-us-1` answers the same. This is
+   bsv-blockchain/broadcaster#329, with a fix in #330 (changes requested 2026-09-01, idle since).
+3. **The nodes refuse it too.** `POST <datahub>/tx` on all three datahubs testnet `/health` lists
+   (`teranode-eks-testnet-eu-1.bsvb.tech`, `bsva-ovh-seed-testnet-us-1.bsvb.tech:8000`, `testnet.gorillanode.io`)
+   answers `413 Request Entity Too Large` from nginx above exactly 1 MiB: a 1,048,000 B body reaches Teranode, and
+   a 1,049,000 B body does not. No upstream issue exists.
+
+The `fraud` would have failed the same way: 107 KB raw, but 997 KB posted, because EF repeats each spent checker's
+427 KB locking script.
+
+### The fix: `WitnessEcMulCheck`
+
+`contracts/src/WitnessEcMulCheck.runar.ts` proves `out = k·base` by checking instead of computing. The spender
+supplies every slope of a right-to-left double-and-add, and the script checks each with a few multiplications mod
+p, with no inversions and no branches. The accumulator starts at a fixed point H (x = 2), so all 256 iterations
+have the same shape. It is **55,419 B of script plus a 16,929 B witness**, against EcMulCheck's 427,042 B.
+
+- A version with `if` branches compiled to 491,671 B. The size grew faster than the iteration count because each
+  unrolled iteration left stack items behind. Branch-free code keeps it at about 206 B per iteration.
+- It reads each constructor value once, first, so its script is `push(base) ‖ push(k) ‖ push(out) ‖ body`. That
+  lets `GateReferee` bind one 55,416 B body by length and SHA-256, and use it for both checkers on both equations
+  (G is the base for equation 1's L). The referee's template shrank from 35,631 B to 34,271 B.
+- Tests, all through `Spend` (MockProvider):
+  - `contracts/test/witness-ecmul.test.ts`. Accepts honest statements: an arbitrary base, G, k = 1, k = n − 1, and
+    8 random ones. Rejects a wrong product, the negated product, a tampered add, double or final slope, a short or
+    long witness, k = 0, k = n, and an off-curve base.
+  - `contracts/test/gate-d.test.ts`. All 15 gate d cases, rerun on the new checker.
+- The witness generator is `ecMulWitness` in `@brc100-poker/protocol`, shared by the tests and gate a.
+
+**Budget for the real referee.** Every referee spend posts the referee's script four times: the code-part push,
+the scriptCode inside the preimage, the continuation, and EF's copy of the spent output. Under the ~750 KB relay
+limit that leaves the real referee about **130 KB** (from `prepare`; `fraud` allows about 150 KB). Spec §10.6
+projected 200 KB.
+
+**Still open upstream.** Raising the two 1 MiB caps (#330 plus `max.message.bytes` in `bsva-infra-flux`, and the
+datahubs' nginx `client_max_body_size`) would remove the budget pressure. The design no longer depends on it.
 
 ## Scope
 
 - **These are the gate's minimal contracts.** The `prepare` and `fraud` shapes are the ones the real referee will
-  use. But the full referee's script, about 200 KB with its evaluator, appears three times in each spend, so its
-  sizes are re-measured in its own plan. So is the dispute reserve (spec §10.6).
+  use, but the real referee's script is larger and is measured against the 130 KB budget in its own plan. So is
+  the dispute reserve (spec §10.6).
 - **Not covered here:**
   - a late post carrying its inlined committed move;
   - an uncommitted signed `move`;
-  - the real escrow's `refund()` covenant path.
+  - the real escrow's `refund()` covenant path;
+  - a timelocked transaction maturing on chain (every lock time had passed when it was built);
+  - mainnet, whose relay limits were not checked.
 
   The `HeadsUpReferee` shapes are the spike's. The refund here is the pre-signed form, and the covenant-timeout
   form is exercised by `forfeit`, which has the same anyone-can-call, nLockTime-gated, pinned-outputs shape.
 - **Money outside the wallet afterwards:**
-  - the referee's phase-2 continuation (2,000 sats; no method spends phase 2);
-  - the forfeit payouts (20,000 sats) and the refund outputs (2,000 sats), which go to the seats' derived keys.
-    Those keys are derivable from the gate key, but the harness does not sweep them.
+  - run 2: the referee's phase-2 continuation (2,000 sats; no method spends phase 2), the forfeit payouts
+    (2,000 sats) and the refund outputs (1,000 sats) to the seats' derived keys;
+  - run 1: the referee deploy's 2,000-sat output, still at phase 0 under the old contract.
