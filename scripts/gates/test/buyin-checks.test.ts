@@ -180,6 +180,15 @@ describe('networkFact', () => {
     expect(networkFact({ txStatus: 'SEEN_ON_NETWORK' }).pass).toBe(true);
     expect(networkFact({ txStatus: 'MINED', competingTxs: [] }).pass).toBe(true);
   });
+  it.each(['SEEN_MULTIPLE_NODES', 'STUMP_PROCESSING', 'IMMUTABLE'])('passes a clean %s, the same set gate a accepts', (txStatus) => {
+    expect(networkFact({ txStatus }).pass).toBe(true);
+    expect(networkFact({ txStatus, competingTxs: [] }).pass).toBe(true);
+  });
+  it.each(['SEEN_MULTIPLE_NODES', 'STUMP_PROCESSING', 'IMMUTABLE'])('fails %s with a competing transaction', (txStatus) => {
+    const f = networkFact({ txStatus, competingTxs: ['dd'.repeat(32)] });
+    expect(f.pass).toBe(false);
+    expect(f.detail).toContain('dd'.repeat(32));
+  });
   it('fails SEEN_ON_NETWORK with competing transactions and names them', () => {
     const f = networkFact({ txStatus: 'SEEN_ON_NETWORK', competingTxs: ['cc'.repeat(32)] });
     expect(f.pass).toBe(false);
@@ -196,7 +205,9 @@ describe('networkFact', () => {
     expect(isTerminal(undefined)).toBe(false);
     expect(isTerminal({ txStatus: 'UNKNOWN' })).toBe(false);
     expect(isTerminal({ txStatus: 'ANNOUNCED_TO_NETWORK' })).toBe(false);
-    for (const s of ['SEEN_ON_NETWORK', 'MINED', 'REJECTED', 'DOUBLE_SPEND_ATTEMPTED']) expect(isTerminal({ txStatus: s })).toBe(true);
+    for (const s of ['SEEN_ON_NETWORK', 'SEEN_MULTIPLE_NODES', 'STUMP_PROCESSING', 'MINED', 'IMMUTABLE', 'REJECTED', 'DOUBLE_SPEND_ATTEMPTED']) {
+      expect(isTerminal({ txStatus: s })).toBe(true);
+    }
   });
 });
 

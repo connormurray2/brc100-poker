@@ -185,7 +185,7 @@ async function run() {
       ...facts.map((f) => `${f.pass ? 'PASS' : 'FAIL'}  ${f.fact}: ${f.detail}`),
       `Broadcaster: ${note}`,
       'Who broadcast it (BSV Desktop itself, and through what): not visible to this page; note it by hand.',
-      `Verdict: ${allPass ? 'PASS' : 'FAIL (see the FAIL lines; an ordering failure means the spec 10.5 fallback is needed)'}`,
+      `Verdict: ${allPass ? 'PASS' : 'FAIL (see the FAIL lines; an ordering failure means the spec needs a revision, see docs/gates/b-bsv-desktop-buyin.md)'}`,
     ].join('\n');
   } catch (e) {
     failStep(current, `${current.textContent} - failed`);

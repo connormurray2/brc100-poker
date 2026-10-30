@@ -5,6 +5,8 @@
 // foreign input at index 0 and the pinned outputs first and in order. These checks read the final
 // transaction the wallet built and say, fact by fact, whether it did.
 import type { Transaction } from '@bsv/sdk';
+// One definition of "seen" and "rejected" for gate (a) and gate (b): src/broadcaster.ts owns the lists.
+import { SEEN_OR_LATER, TERMINAL_FAILURES } from '../src/broadcaster.js';
 
 /**
  * The continuation's amount. The page's buy-in spends the 1,000-sat escrow plus coins the wallet chooses,
@@ -147,16 +149,16 @@ export function sameSignedTx(signed: Transaction, final: Transaction | undefined
 export interface BroadcasterStatus { txStatus?: string; competingTxs?: string[] }
 
 /** Statuses after which polling can stop. Anything else (404, UNKNOWN, QUEUED, ...) means "not yet". */
-export const TERMINAL_STATUSES = ['SEEN_ON_NETWORK', 'MINED', 'REJECTED', 'DOUBLE_SPEND_ATTEMPTED'];
+export const TERMINAL_STATUSES = [...SEEN_OR_LATER, ...TERMINAL_FAILURES];
 export const isTerminal = (status: BroadcasterStatus | undefined) => status?.txStatus !== undefined && TERMINAL_STATUSES.includes(status.txStatus);
 
-/** Passes only at SEEN_ON_NETWORK or MINED with no competing transaction (G-09, G-10). */
+/** Passes only at a seen-or-later status (SEEN_OR_LATER) with no competing transaction (G-09, G-10). */
 export function networkFact(status: BroadcasterStatus | undefined): Fact {
   if (!status || status.txStatus === undefined) {
     return { fact: FACT_NETWORK, pass: false, detail: 'no status from BSV Broadcaster (the transaction was not found, or the request failed)' };
   }
   const competing = status.competingTxs ?? [];
-  const seen = status.txStatus === 'SEEN_ON_NETWORK' || status.txStatus === 'MINED';
+  const seen = SEEN_OR_LATER.includes(status.txStatus);
   const parts = [`status ${status.txStatus}`];
   if (competing.length) parts.push(`competing transactions: ${competing.join(', ')}`);
   else if (seen) parts.push('no competing transactions');

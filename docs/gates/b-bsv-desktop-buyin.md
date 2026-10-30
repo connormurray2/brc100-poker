@@ -45,7 +45,7 @@ If the wallet reports a network other than testnet, the page refuses and shows a
 | BSV Desktop version | |
 | Escrow txid:vout | |
 | Buy-in txid | |
-| Broadcaster status of the buy-in txid (SEEN_ON_NETWORK or MINED, no competing txs) | |
+| Broadcaster status of the buy-in txid (SEEN_ON_NETWORK, SEEN_MULTIPLE_NODES, STUMP_PROCESSING, MINED or IMMUTABLE, no competing txs) | |
 | Signed transaction is the one `signAction` returned | |
 | BSV Desktop broadcast it itself, and through what (note by hand: the page cannot see this; or check the broadcaster for the txid) | |
 | Foreign input is at index 0 | |
@@ -57,7 +57,8 @@ If the wallet reports a network other than testnet, the page refuses and shows a
 ## Decision rule
 
 - **Every fact PASSES** (the four ordering facts, the signed transaction equal to the returned one, and the broadcaster at
-  `SEEN_ON_NETWORK` or `MINED` with no competing transactions): gate (b) passes. The
+  `SEEN_ON_NETWORK`, `SEEN_MULTIPLE_NODES`, `STUMP_PROCESSING`, `MINED` or `IMMUTABLE` with no competing
+  transactions, the same set gate (a) accepts): gate (b) passes. The
   pinned-prefix rule in 10.5 stands as written. Record the version, txid and facts above and change the
   status to **PASS**.
 - **Extra outputs after the pinned prefix** (change, a wallet commission) are fine: the covenant ignores
