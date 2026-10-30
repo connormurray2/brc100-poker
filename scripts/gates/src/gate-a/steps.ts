@@ -146,7 +146,12 @@ export async function submitStep(ctx: StepCtx, id: StepId, rec: StepRecord) {
         ctx.save();
         return;
       }
-      if (v.kind === 'input-blamed') throw new StepTerminal(id, `${v.reason}; this broadcaster never received the transaction, so another spent its inputs`);
+      if (v.kind === 'input-blamed') {
+        // The broadcaster has no record (404). If the network had accepted this transaction before, the
+        // input-blaming answer is no verdict (G-11): it was probably mined, then forgotten by this instance.
+        if (wasAccepted(rec)) throw new StepTerminal(id, `${v.reason} after the network had accepted it, and the broadcaster no longer has it (404): no verdict (G-11); it is probably mined — check https://test.whatsonchain.com/tx/${rec.txid}`);
+        throw new StepTerminal(id, `${v.reason}; this broadcaster never received the transaction, so another spent its inputs`);
+      }
       if (ctx.now() + delay > deadline) throw new Error(`${id}: not accepted (${v.reason}); re-run to resume`);
       ctx.log(`${id}: never received (404); POSTing the identical bytes again in ${delay / 1000} s`);
       await ctx.sleep(delay);

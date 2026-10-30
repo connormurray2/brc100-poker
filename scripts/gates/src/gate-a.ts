@@ -126,7 +126,9 @@ function record(ctx: Ctx, id: StepId, what: string, tx: Transaction, expected: s
 }
 
 async function ensure(ctx: Ctx, id: StepId, build: () => Promise<void>) {
-  if (!ctx.run.steps[id]) await build();
+  if (ctx.run.steps[id]) return;
+  takeSdkWarnings(); // drop anything left from an earlier step or a failed build: notes hold only this step's
+  await build();
 }
 
 /** WhatsOnChain testnet's tip (`/chain/info` blocks): the funded run's second tip source. */

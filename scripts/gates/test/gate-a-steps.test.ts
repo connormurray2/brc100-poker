@@ -154,6 +154,19 @@ describe('gate (a) steps: terminal verdicts stop the step, nothing is rebuilt', 
     expect(f.posts()).toHaveLength(0);
   });
 
+  it('SEEN, then lost (404), re-POST answered 466, still 404: no verdict (G-11), not a double spend', async () => {
+    const f = setup({ state: 'seen', seen: true, routes: {
+      'GET /tx/{txid}': [{ status: 404 }],
+      'POST /tx': [{ status: 400, body: { error: 'transaction failed validation', reason: 'UTXO_SPENT', status: 466 } }],
+    } });
+    const err = await advance(f.ctx, 'forfeit', 'mined').then(() => undefined, (e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(StepTerminal);
+    expect(err!.message).toMatch(/no verdict.*whatsonchain/);
+    expect(err!.message).not.toMatch(/another spent its inputs/);
+    expect(f.posts()).toHaveLength(1);
+    expect(f.calls.filter((c) => c.method === 'GET' && c.path.startsWith('/tx/'))).toHaveLength(2);
+  });
+
   it('a validator rejection on POST (465) stops at once, without a GET', async () => {
     const f = setup({ state: 'built', routes: { 'POST /tx': [{ status: 400, body: { error: 'transaction failed validation', reason: 'fee too low', status: 465 } }] } });
     await expect(advance(f.ctx, 'forfeit', 'seen')).rejects.toThrow(/STOPPED.*465/);
