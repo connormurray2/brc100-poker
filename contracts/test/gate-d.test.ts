@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { BigNumber, Curve, Hash, Point, Transaction, UnlockingScript, LockingScript, Utils } from '@bsv/sdk';
 import {
   RunarContract, MockProvider, LocalSigner, buildP2PKHScript, encodeArg, encodePushData,
-  encodeScriptNumber, dryRunMultiContractInput,
+  encodeScriptNumber, dryRunMultiContractInput, serializeState,
 } from 'runar-sdk';
 import type { UTXO } from 'runar-sdk';
 import type { RunarArtifact } from 'runar-ir-schema';
@@ -104,7 +104,7 @@ type Tmpl = {
   genHead: string; genMid: string; genBody: string; genTail: string;
 };
 
-const pushPoint = (p: Point) => '40' + aff(p);
+const pushPoint = (p: Point | string) => '40' + (typeof p === 'string' ? p : aff(p));
 
 /** Minimal Script-number push, written independently of the SDK (as in ecmulcheck.test.ts). */
 function pushNum(n: bigint): string {
@@ -117,11 +117,11 @@ function pushNum(n: bigint): string {
 }
 
 /** EcMulCheck(base, k, out): push(base) A push(k) mid push(base) push(k) B push(out) tail. */
-const mulScript = (t: Tmpl, base: Point, k: bigint, out: Point) =>
+const mulScript = (t: Tmpl, base: Point, k: bigint, out: Point | string) =>
   pushPoint(base) + t.mulA + pushNum(k) + t.mulMid + pushPoint(base) + pushNum(k) + t.mulB + pushPoint(out) + t.mulTail;
 
 /** EcMulGenCheck(k, out): head push(k) mid push(k) body push(out) tail. */
-const genScript = (t: Tmpl, k: bigint, out: Point) =>
+const genScript = (t: Tmpl, k: bigint, out: Point | string) =>
   t.genHead + pushNum(k) + t.genMid + pushNum(k) + t.genBody + pushPoint(out) + t.genTail;
 
 // ---- transactions -----------------------------------------------------------------------------
@@ -131,7 +131,8 @@ let genArt: RunarArtifact;
 let refArt: RunarArtifact;
 let tmpl: Tmpl;
 
-function refereeArgs(r: Recorded): unknown[] {
+/** Constructor args. `L0`, `M0` and `pkh0` are the initial state (normally zeros). */
+function refereeArgs(r: Recorded, L0 = ZERO_POINT, M0 = ZERO_POINT, pkh0 = '00'.repeat(20)): unknown[] {
   return [
     Utils.toHex(Utils.toArray(r.st.domain, 'utf8')),
     aff(r.st.B2), aff(r.st.P1), aff(r.st.P2), aff(r.A1), aff(r.A2), r.z,
@@ -139,7 +140,7 @@ function refereeArgs(r: Recorded): unknown[] {
     BigInt(tmpl.mulA.length / 2), BigInt(tmpl.mulB.length / 2), sha256Hex(tmpl.mulA + tmpl.mulB),
     tmpl.mulMid, tmpl.mulTail,
     tmpl.genHead, tmpl.genMid, BigInt(tmpl.genBody.length / 2), sha256Hex(tmpl.genBody), tmpl.genTail,
-    ZERO_POINT, ZERO_POINT, '00'.repeat(20),
+    L0, M0, pkh0,
   ];
 }
 
@@ -176,13 +177,15 @@ async function feeCoin(provider: MockProvider, satoshis: number) {
 }
 
 /** Unlocking script for a referee method: user args, the change pair, the preimage, the selector. */
-function refereeUnlock(c: RunarContract, method: string, args: unknown[], changePKH: string, change: bigint, preimage: string) {
+function refereeUnlock(
+  c: RunarContract, method: string, args: unknown[], changePKH: string, change: bigint, preimage: string, codePart?: string,
+) {
   const pub = c.artifact.abi.methods.filter((m) => m.isPublic);
   const idx = pub.findIndex((m) => m.name === method);
   const m = pub[idx]!;
   const tail = m.params.slice(args.length).map((p) => p.name);
   expect(tail).toEqual(['_changePKH', '_changeAmount', 'txPreimage']); // no _newAmount: addOutput sizes the continuation
-  let hex = c.buildStatefulPrefix('', m.usesCodePart ?? true);
+  let hex = codePart === undefined ? c.buildStatefulPrefix('', m.usesCodePart ?? true) : encodePushData(codePart);
   for (const a of args) hex += encodeArg(a);
   hex += encodePushData(changePKH) + encodeScriptNumber(change) + encodePushData(preimage);
   if (pub.length > 1) hex += encodeScriptNumber(BigInt(idx));
@@ -199,13 +202,20 @@ async function callReferee(env: Env, o: {
   extraInputs?: Array<{ utxo: UTXO; unlock: string }>;
   outputs: Array<{ script: string; satoshis: number }>;
   next: { satoshis: number; state: Record<string, unknown> };
+  /** Attack hooks: the contract used for the preimage, a claimed `_codePart`, a raw continuation. */
+  contract?: RunarContract;
+  codePart?: string;
+  contScript?: string;
 }): Promise<Transaction> {
   const extra = o.extraInputs ?? [];
-  const ref = RunarContract.fromUtxo(refArt, env.ref);
+  const ref = o.contract ?? RunarContract.fromUtxo(refArt, env.ref);
   const methodIndex = refArt.abi.methods.filter((m) => m.isPublic).findIndex((m) => m.name === o.method);
-  const nextC = RunarContract.fromUtxo(refArt, env.ref);
-  nextC.setState(o.next.state);
-  const contScript = nextC.getLockingScript();
+  let contScript = o.contScript;
+  if (contScript === undefined) {
+    const nextC = RunarContract.fromUtxo(refArt, env.ref);
+    nextC.setState(o.next.state);
+    contScript = nextC.getLockingScript();
+  }
   const coin = await feeCoin(env.provider, FEE_COIN);
   const feeOutpoint = rev(coin.utxo.txid) + '00000000';
   const args = o.args(feeOutpoint);
@@ -227,29 +237,34 @@ async function callReferee(env: Env, o: {
     tx.addOutput({ satoshis: change, lockingScript: LockingScript.fromHex(p2pkh(coin.pkh)) });
 
     const { preimageHex } = ref.computeOpPushTxWithCodeSep(tx, 0, env.ref.script, env.ref.satoshis, methodIndex);
-    tx.inputs[0]!.unlockingScript = UnlockingScript.fromHex(refereeUnlock(ref, o.method, args, coin.pkh, BigInt(change), preimageHex));
+    tx.inputs[0]!.unlockingScript = UnlockingScript.fromHex(refereeUnlock(ref, o.method, args, coin.pkh, BigInt(change), preimageHex, o.codePart));
     const feeIdx = tx.inputs.length - 1;
     const sig = await coin.signer.sign(tx.toHex(), feeIdx, coin.utxo.script, coin.utxo.satoshis);
     tx.inputs[feeIdx]!.unlockingScript = UnlockingScript.fromHex(encodePushData(sig) + encodePushData(coin.pub));
 
     const need = Math.ceil((tx.toBinary().length * 100) / 1000) + 10; // MockProvider's 100 sat/kB floor
-    if (need <= fee) return tx;
+    if (need <= fee) {
+      console.log(`  ${o.method} tx: ${tx.toBinary().length} B (${tx.inputs.length} in, ${tx.outputs.length} out; ` +
+        `referee unlock ${tx.inputs[0]!.unlockingScript!.toBinary().length} B)`);
+      return tx;
+    }
     fee = need;
   }
 }
 
-async function prepareTx(env: Env, eq: 1 | 2, L: Point, M: Point, t: Tmpl = tmpl) {
+async function prepareTx(env: Env, eq: 1 | 2, L: Point | string, M: Point | string, t: Tmpl = tmpl) {
   const r = env.rec;
+  const hexOf = (p: Point | string) => (typeof p === 'string' ? p : aff(p));
   const c = cOf(r);
   const lScript = eq === 1 ? genScript(t, r.z, L) : mulScript(t, r.st.B2, r.z, L);
   const mScript = mulScript(t, eq === 1 ? r.st.P1 : r.st.P2, c, M);
   return callReferee(env, {
     method: 'prepare',
-    args: () => [BigInt(eq), aff(L), aff(M), t.mulA, t.mulB, eq === 1 ? t.genBody : '', REFUND_PKH],
+    args: () => [BigInt(eq), hexOf(L), hexOf(M), t.mulA, t.mulB, eq === 1 ? t.genBody : '', REFUND_PKH],
     outputs: [{ script: lScript, satoshis: CHECKER_SATS }, { script: mScript, satoshis: CHECKER_SATS }],
     next: {
       satoshis: env.ref.satoshis + BOND,
-      state: { phase: 1n, eq: BigInt(eq), L: aff(L), M: aff(M), bondPKH: REFUND_PKH },
+      state: { phase: 1n, eq: BigInt(eq), L: hexOf(L), M: hexOf(M), bondPKH: REFUND_PKH },
     },
   });
 }
@@ -269,6 +284,26 @@ async function fraudTx(env: Env, checkers: [UTXO, UTXO]) {
 async function send(env: Env, tx: Transaction) {
   await env.provider.broadcast(tx);
   env.ref = utxoAt(tx, 0);
+}
+
+/** A transaction from a fresh fee coin carrying exactly `outs` then change, broadcast. */
+async function handTx(env: Env, outs: Array<{ script: string; satoshis: number }>) {
+  const coin = await feeCoin(env.provider, FEE_COIN);
+  let fee = 0;
+  for (;;) {
+    const tx = new Transaction();
+    tx.addInput({ sourceTXID: coin.utxo.txid, sourceOutputIndex: 0, unlockingScript: UnlockingScript.fromHex(''), sequence: 0xffffffff });
+    for (const o of outs) tx.addOutput({ satoshis: o.satoshis, lockingScript: LockingScript.fromHex(o.script) });
+    tx.addOutput({ satoshis: FEE_COIN - outs.reduce((a, o) => a + o.satoshis, 0) - fee, lockingScript: LockingScript.fromHex(p2pkh(coin.pkh)) });
+    const sig = await coin.signer.sign(tx.toHex(), 0, coin.utxo.script, coin.utxo.satoshis);
+    tx.inputs[0]!.unlockingScript = UnlockingScript.fromHex(encodePushData(sig) + encodePushData(coin.pub));
+    const need = Math.ceil((tx.toBinary().length * 100) / 1000) + 10;
+    if (need <= fee) {
+      await env.provider.broadcast(tx);
+      return tx;
+    }
+    fee = need;
+  }
 }
 
 const size = (tx: Transaction) => tx.toBinary().length;
@@ -426,6 +461,77 @@ describe('gate d: referee-created checkers and fraud proofs', () => {
     }
   }, 600_000);
 
+  it('a Point argument stretched past 64 bytes can forge neither a checker nor the stored state', async () => {
+    // The attack (review, fix round 1): an 81-byte lPt. The checker's `0x40` pushes the first 64
+    // bytes as `out`, then RUNS the last 17 (OP_2DROP OP_1 OP_1 OP_NOP x14) before its final
+    // OP_EQUAL, so it passes for any L. The same 17 bytes stretch the stored state: Rúnar reads a
+    // fixed-width state section from the END of the scriptCode and checks only that it is 165
+    // bytes and starts 0x6a. So the fraud caller claims a _codePart 17 bytes longer, and the
+    // referee reads phase 1, the eq, and a garbage L out of lPt's own bytes.
+    const le8 = (n: number) => n.toString(16).padStart(2, '0') + '00'.repeat(7);
+    const tailOps = '6d5151' + '61'.repeat(14);
+    for (const eq of [1, 2] as const) {
+      const r = honest();
+      const env = await setup(r);
+      const deployed = new RunarContract(refArt, refereeArgs(r));
+      const { L, M } = products(r, eq);
+      const lHex = '6a' + le8(1) + le8(eq) + '11'.repeat(47) + tailOps;
+      expect(lHex.length / 2).toBe(81);
+      const prep = await prepareTx(env, eq, lHex, M);
+      const accepted = await env.provider.broadcast(prep).then(
+        () => true,
+        (e: unknown) => {
+          expect(String(e)).toMatch(REJECTED(0));
+          return false;
+        },
+      );
+      if (accepted) {
+        // Carry the attack through, to show what an unchecked width buys.
+        env.ref = utxoAt(prep, 0);
+        const codePart = deployed.getCodePartHex() + '6a' + le8(1) + le8(eq);
+        const garbageL = lHex.slice(17 * 2);
+        const contScript = codePart + '6a' +
+          serializeState(refArt.stateFields!, { phase: 2n, eq: BigInt(eq), L: garbageL, M: aff(M), bondPKH: REFUND_PKH });
+        const fr = await callReferee(env, {
+          method: 'fraud',
+          args: (fo) => [fo],
+          extraInputs: [{ utxo: utxoAt(prep, 1), unlock: '' }, { utxo: utxoAt(prep, 2), unlock: '' }],
+          outputs: [{ script: p2pkh(REFUND_PKH), satoshis: BOND }],
+          next: { satoshis: env.ref.satoshis - BOND, state: {} },
+          contract: deployed, codePart, contScript,
+        });
+        await env.provider.broadcast(fr);
+        throw new Error(`eq ${eq}: an HONEST proof was convicted and the bond refunded (fraud ${fr.id('hex')})`);
+      }
+      // A stretched M is refused the same way.
+      const mHex = aff(M) + tailOps;
+      await expect(env.provider.broadcast(await prepareTx(env, eq, L, mHex))).rejects.toThrow(REJECTED(0));
+      // So is a short one.
+      await expect(env.provider.broadcast(await prepareTx(env, eq, L, aff(M).slice(0, -2)))).rejects.toThrow(REJECTED(0));
+    }
+  }, 600_000);
+
+  it('fraud requires the referee to be output 0: a phase-1 referee at output 3 is refused', async () => {
+    // Only a deployer can make this (prepare always continues at output 0). Inputs are
+    // (T:3, T:1, T:2, fee), so hashPrevouts, the phase, the checkers and L != A + M all hold:
+    // only the vout-0 assert refuses it.
+    const r = tamperedZ(honest());
+    const env = await setup(r);
+    const { L, M } = products(r, 1);
+    const forged = new RunarContract(refArt, refereeArgs(r));
+    forged.setState({ phase: 1n, eq: 1n, L: aff(L), M: aff(M), bondPKH: REFUND_PKH });
+    const T = await handTx(env, [
+      { script: p2pkh(REFUND_PKH), satoshis: 1 },
+      { script: genScript(tmpl, r.z, L), satoshis: CHECKER_SATS },
+      { script: mulScript(tmpl, r.st.P1, cOf(r), M), satoshis: CHECKER_SATS },
+      { script: forged.getLockingScript(), satoshis: REF_SATS + BOND },
+    ]);
+    env.ref = utxoAt(T, 3);
+    const fr = await fraudTx(env, [utxoAt(T, 1), utxoAt(T, 2)]);
+    for (const i of [1, 2]) expect(dryRunMultiContractInput(fr.toHex(), i, T.outputs[i]!.lockingScript.toHex(), CHECKER_SATS)).toEqual({ valid: true });
+    await expect(env.provider.broadcast(fr)).rejects.toThrow(REJECTED(0));
+  }, 600_000);
+
   it('refuses checkers not created by this referee', async () => {
     const env = await setup(tamperedZ(honest()));
     const { L, M } = products(env.rec, 1);
@@ -433,15 +539,11 @@ describe('gate d: referee-created checkers and fraud proofs', () => {
     await send(env, prep);
 
     // Byte-identical, spendable checkers, created by an unrelated transaction.
-    const coin = await feeCoin(env.provider, 100_000);
-    const dup = new Transaction();
-    dup.addInput({ sourceTXID: coin.utxo.txid, sourceOutputIndex: 0, unlockingScript: UnlockingScript.fromHex(''), sequence: 0xffffffff });
-    dup.addOutput({ satoshis: 1, lockingScript: LockingScript.fromHex(p2pkh(coin.pkh)) });
-    dup.addOutput({ satoshis: CHECKER_SATS, lockingScript: prep.outputs[1]!.lockingScript });
-    dup.addOutput({ satoshis: CHECKER_SATS, lockingScript: prep.outputs[2]!.lockingScript });
-    const sig = await coin.signer.sign(dup.toHex(), 0, coin.utxo.script, coin.utxo.satoshis);
-    dup.inputs[0]!.unlockingScript = UnlockingScript.fromHex(encodePushData(sig) + encodePushData(coin.pub));
-    await env.provider.broadcast(dup);
+    const dup = await handTx(env, [
+      { script: p2pkh(REFUND_PKH), satoshis: 1 },
+      { script: prep.outputs[1]!.lockingScript.toHex(), satoshis: CHECKER_SATS },
+      { script: prep.outputs[2]!.lockingScript.toHex(), satoshis: CHECKER_SATS },
+    ]);
 
     for (const pair of [
       [utxoAt(dup, 1), utxoAt(dup, 2)],
@@ -484,18 +586,29 @@ describe('gate d: referee-created checkers and fraud proofs', () => {
     expect(stateOf(env.ref).phase).toBe(1n);
   }, 600_000);
 
-  it('requires each phase: no fraud before prepare, no second prepare, no second fraud', async () => {
+  it('fraud in phase 0 is refused by the phase guard alone', async () => {
+    // A phase-0 referee deployed as output 0 beside two genuine, spendable checkers, with the true
+    // products and the refund PKH already in its state: hashPrevouts, vout 0, the checkers,
+    // L != A + M and the bond output all hold, so only the phase guard refuses.
+    const r = tamperedZ(honest());
+    const env = await setup(r);
+    const { L, M } = products(r, 1);
+    const D = await handTx(env, [
+      { script: new RunarContract(refArt, refereeArgs(r, aff(L), aff(M), REFUND_PKH)).getLockingScript(), satoshis: REF_SATS },
+      { script: genScript(tmpl, r.z, L), satoshis: CHECKER_SATS },
+      { script: mulScript(tmpl, r.st.P1, cOf(r), M), satoshis: CHECKER_SATS },
+    ]);
+    env.ref = utxoAt(D, 0);
+    expect(stateOf(env.ref)).toMatchObject({ phase: 0n, L: aff(L), M: aff(M), bondPKH: REFUND_PKH });
+    const fr = await fraudTx(env, [utxoAt(D, 1), utxoAt(D, 2)]);
+    for (const i of [1, 2]) expect(dryRunMultiContractInput(fr.toHex(), i, D.outputs[i]!.lockingScript.toHex(), CHECKER_SATS)).toEqual({ valid: true });
+    await expect(env.provider.broadcast(fr)).rejects.toThrow(REJECTED(0));
+  }, 600_000);
+
+  it('requires each phase: no second prepare, no prepare after fraud', async () => {
     const env = await setup(tamperedZ(honest()));
     const { L, M } = products(env.rec, 1);
     const deployed = env.ref;
-
-    // Phase 0: a fraud against checkers from a real prepare elsewhere is refused.
-    const other = await setup(env.rec);
-    const otherPrep = await prepareTx(other, 1, L, M);
-    await send(other, otherPrep);
-    for (const i of [1, 2]) env.provider.addUtxo('x', utxoAt(otherPrep, i));
-    await expect(env.provider.broadcast(await fraudTx(env, [utxoAt(otherPrep, 1), utxoAt(otherPrep, 2)])))
-      .rejects.toThrow(REJECTED(0));
 
     // Phase 1: a second prepare is refused.
     const prep = await prepareTx(env, 1, L, M);

@@ -137,8 +137,15 @@ export class GateReferee extends StatefulSmartContract {
   /**
    * Create the two checkers for equation `eqSel`, claiming L = z·B and M = c·P.
    *
-   * `genBody` is used only for eq 1 (pass empty for eq 2). The products are not checked here: a
-   * false claim just makes its checker unspendable, so fraud cannot follow.
+   * `genBody` is used only for eq 1 (pass empty for eq 2). The products' values are not checked
+   * here: a false claim just makes its checker unspendable, so fraud cannot follow.
+   *
+   * Their WIDTHS are checked, and must be: Rúnar does not enforce a Point's 64 bytes at runtime.
+   * An 81-byte lPt would put 17 caller bytes of script after the checker's `0x40` push (so the
+   * checker passes for any L), and would stretch the stored state, which Rúnar parses from the END
+   * of the scriptCode (checking only its length and leading 0x6a), letting fraud read a forged
+   * phase, eq and L. Every fixed-width argument is length-checked for the same reason, and so are
+   * the recorded Points spliced into the checkers (fail closed on a malformed record).
    */
   public prepare(
     eqSel: bigint,
@@ -151,7 +158,14 @@ export class GateReferee extends StatefulSmartContract {
   ) {
     assert(this.phase === 0n);
     assert(eqSel === 1n || eqSel === 2n);
+    assert(len(lPt) === 64n);
+    assert(len(mPt) === 64n);
     assert(len(refundPKH) === 20n);
+    assert(len(this.B2) === 64n);
+    assert(len(this.P1) === 64n);
+    assert(len(this.P2) === 64n);
+    assert(len(this.A1) === 64n);
+    assert(len(this.A2) === 64n);
     assert(len(mulA) === this.mulLenA);
     assert(len(mulB) === this.mulLenB);
     assert(sha256(cat(mulA, mulB)) === this.mulHash);
