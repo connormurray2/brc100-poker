@@ -8,6 +8,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@brc100-poker/protocol": "*",
     "@bsv/sdk": "^2.0.7",
     "runar-compiler": "1.0.0-rc.1",
     "runar-ir-schema": "1.0.0-rc.1",
