@@ -511,8 +511,8 @@ Six-max is longer (phase 2). Testnet constants shrink all of this to hours.
 
 ### 10.6 Fees and reserves
 
-- **Rate.** The table reads `/policy` when the room is created and fixes it in the terms. Every escrow-funded fee is pinned at four times that rate. **Until gate (a) runs, the rate is the assumed 1 sat/kB (section 9), and every sat figure below is at that rate and scales linearly with it.** The figures are replaced from the rate gate (a) records.
-- **Reserve.** Each seat's buy-in includes a dispute reserve inside the escrow, sized to cover the largest dispute at that rate: one fraud proof, plus a full on-chain hand.
+- **Rate.** The table reads `/policy` when the room is created and fixes it in the terms. Every escrow-funded fee is pinned at four times that rate. **Until gate (a) runs, the rate is the assumed 1 sat/kB (section 9), and every sat figure below is at that rate, with the 4× margin applied where stated, and scales linearly with it.** The figures are replaced from the rate gate (a) records.
+- **Reserve.** Each seat's buy-in includes a dispute reserve inside the escrow, sized to cover the largest dispute at four times that rate: one fraud proof, plus a full on-chain hand.
   - **The fraud proof, measured** (gate d, `docs/gates/d-checker-wiring.md`; gate a's dry run is 11 B longer for its longer domain string). A lie needs one false equation, so `prepare` creates two checkers, not four:
 
     | Pair (`prepare` + `fraud`), gate referee | Bytes |
@@ -522,8 +522,14 @@ Six-max is longer (phase 2). Testnet constants shrink all of this to hours.
 
     That is 55% and 43% of the 3.5 MB this section first estimated.
   - **The real referee is bigger.** Each spend carries the referee's script three times (the code-part push, the scriptCode inside the preimage push, the continuation). The gate referee's script is 35,631 B; the real one is about 200 KB. Each of `prepare` and `fraud` then grows by about 0.5 MB, and one fraud proof comes to about **2.9 MB** (equation 1) or 2.5 MB (equation 2), still under 3.5 MB. The reserve is sized from the 2.9 MB until the real referee is measured in its own plan.
-  - **In sats.** About 2,900 sats at 1 sat/kB for the projected 2.9 MB, and about 290,000 at 100 sat/kB. Gate (a)'s dry run priced the gate pair at 2,848 sats at 1 sat/kB, on the larger EF encoding the broadcaster receives. The network itself prices raw bytes, so this overpays.
-  - **The hand.** A full on-chain hand is not measured by the gates, so the working totals stay at about 10,000 sats at 1 sat/kB and about 1,000,000 at 100 sat/kB. They carry the projected fraud proof and leave the rest for the hand and the margin.
+  - **The fraud proof in sats.** The projected 2.9 MB is 2,900 kB: 2,900 sats at 1 sat/kB and 290,000 at 100 sat/kB. At the 4× margin that is 11,600 and 1,160,000. Gate (a)'s dry run priced the gate pair at 2,848 sats at 1 sat/kB, on the larger EF encoding the broadcaster receives. The network itself prices raw bytes, so this overpays.
+  - **The hand.** A full on-chain hand is not measured by the gates. It is allowed 7,100 sats at 1 sat/kB (710,000 at 100 sat/kB), with no further margin. This is a placeholder, replaced when the real referee is measured in its own plan.
+  - **The reserve.** The fraud proof at 4× plus the hand allowance, rounded up:
+
+    | Rate | Fraud proof at 4× | Hand | Sum | Reserve |
+    | --- | --- | --- | --- | --- |
+    | 1 sat/kB | 11,600 | 7,100 | 18,700 | **20,000 sats** |
+    | 100 sat/kB | 1,160,000 | 710,000 | 1,870,000 | **2,000,000 sats** |
 - **Who pays.** At resolution, a seat that forfeits or is proven to cheat pays every dispute fee from its balance. A dispute that ends with every move made splits its fees equally, which also covers fee griefing.
 - **Checker size.** Measured: an `EcMulCheck` locking script is 427,300 B and an `EcMulGenCheck` 426,427 B as deployed, each under the stock 500 KB per-script policy (72,700 B and 73,573 B of headroom).
 - **Unlocking-script size and the script policy** (found by gate d). `prepare` must produce each checker's exact locking script, so the caller supplies each template in the unlocking script and the referee splices the statement in.
@@ -533,8 +539,8 @@ Six-max is longer (phase 2). Testnet constants shrink all of this to hours.
 
 ### 10.7 Checker wiring
 
-- **The checkers.** Constant-script, stateless Rúnar contracts, each created by the dispute referee as output 1 of a `prepare` transaction, with its statement baked into the locking script.
-- **The binding.** The referee's `fraud` requires input 1 to be `(own previous txid, 1)`, via `extractOutpoint` and `extractHashPrevouts`. That binding is verified feasible against Rúnar's companion-verifier pattern.
+- **The checkers.** Constant-script, stateless Rúnar contracts, two per `prepare` (one per equation of the false statement). The dispute referee creates them as outputs 1 and 2 of the `prepare` transaction, each with its statement baked into the locking script.
+- **The binding.** The referee's `fraud` binds exactly four inputs, via `extractOutpoint` and `extractHashPrevouts`: the referee itself (input 0), `(prepTxid, 1)`, `(prepTxid, 2)` and the fee input. It refuses any other count or order, so a checker from another `prepare` cannot be swapped in. That binding is verified feasible against Rúnar's companion-verifier pattern.
 - **Broadcast as a pair.** `prepare` and `fraud` are always broadcast together, so an outsider cannot race the checker output. A `prepare` whose checker is never spent leaves the referee in phase 1 until the phase-1 timeout resets it (10.3).
 
 | Checker | Script | Cost |
@@ -573,7 +579,7 @@ Written for mainnet.
 5. **Collusion and Sybils.** Identities are free, so penalties are economic.
 6. **The relay, lobby and watcher** can delay messages, hide rooms or post late. They cannot change outcomes or see cards.
 7. **New code on chain.** The escrow, referee, checkers and evaluator need cold review before mainnet (G-30). Rúnar rc.1 has had silent miscompiles (icellan/runar#175, #178), so every contract is tested differentially through real `Spend`. Gate d also found that Rúnar does not enforce argument widths, so every fixed-width value is length-checked by hand (10.3).
-8. **Fees.** Disputes cost about 10,000 sats at 1 sat/kB and about 1,000,000 at 100 sat/kB. The 1 sat/kB figure is an assumption until gate (a) records the rate it paid. Reserves are sized at table creation. A fee rise beyond the 4× margin leaves the timeout refund as the exit.
+8. **Fees.** Each seat's dispute reserve is 20,000 sats at 1 sat/kB and 2,000,000 at 100 sat/kB, which includes the 4× margin (10.6). The 1 sat/kB figure is an assumption until gate (a) records the rate it paid. Reserves are sized at table creation. A fee rise beyond the 4× margin leaves the timeout refund as the exit.
 9. **Script policy.** Checker scripts are about 0.43 MB each, under a stock node's 500 KB policy. The equation-1 `prepare` unlocking script is 925 KB, over that policy and under BSV Broadcaster's 100 MB. If gate (a) shows it is not relayed and mined, the referee splits `prepare` into one checker per step (10.6).
 10. **0-conf.** Money counts at `SEEN_ON_NETWORK`; miner collusion is out of scope (G-14).
 
