@@ -7,11 +7,15 @@
     "test": "vitest run",
     "gate:c": "tsx src/messagebox-latency.ts",
     "gate:b": "vite buyin --config buyin/vite.config.ts",
-    "typecheck:b": "tsc --noEmit -p tsconfig.json"
+    "typecheck:b": "tsc --noEmit -p tsconfig.json",
+    "gate:a": "tsx src/gate-a.ts"
   },
   "dependencies": {
+    "@brc100-poker/protocol": "*",
     "@bsv/message-box-client": "^2.7.0",
-    "@bsv/sdk": "^2.8.6"
+    "@bsv/sdk": "^2.8.6",
+    "runar-ir-schema": "1.0.0-rc.1",
+    "runar-sdk": "1.0.0-rc.1"
   },
   "devDependencies": {
     "tsx": "^4.23.15",
